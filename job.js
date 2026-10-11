@@ -2,7 +2,7 @@ const fs = require('fs');
 
 const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
-const GOAL = 807;
+const GOAL = 17807;
 const WORKERS = 10;
 const FEE = 50, MIN = 100, SEED = 1096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
