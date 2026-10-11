@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-const API = "https://taplifestylesite.com/api"; // Use your full domain URL
+const API = "https://lagoslife.app//api"; // Use your full domain URL
 const TO = process.env.TO;                      // GitHub Secret for destination ID
 const FEE = 50, MIN = 100, SEED = 1096000;
 
