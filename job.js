@@ -1,38 +1,34 @@
 const fs = require('fs');
 
-const API = "https://lagoslife.app/api"; // Use your full domain URL
-const TO = process.env.TO;                     // GitHub Secret for destination ID
+const API = "https://lagoslife.app/api";
+const TO = process.env.TO;
+const GOAL = 300;
+const WORKERS = 10;
 const FEE = 50, MIN = 100, SEED = 1096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 
-// Load ledger file from repository store
 const ledgerPath = './store/accs.json';
+
+// Ensure store directory exists
+if (!fs.existsSync('./store')) {
+  fs.mkdirSync('./store');
+}
+
 let ledger = [];
 if (fs.existsSync(ledgerPath)) {
   try {
     const rawData = fs.readFileSync(ledgerPath, 'utf8');
-    if (rawData.trim()) {
-      ledger = JSON.parse(rawData);
-    }
+    if (rawData.trim()) ledger = JSON.parse(rawData);
   } catch (e) {
-    console.log("Error parsing store/accs.json:", e.message);
+    console.log("Error parsing ledger, starting fresh.");
   }
-}
-
-console.log(`Loaded ledger from store/accs.json: ${ledger.length} accounts`);
-if (!ledger.length) {
-  console.log("Ledger empty or invalid — nothing to process");
-  process.exit(0);
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Helper function to handle fetch requests and cookies in Node.js
 async function request(url, options = {}, cookieJar = '') {
   options.headers = options.headers || {};
-  if (cookieJar) {
-    options.headers['cookie'] = cookieJar;
-  }
+  if (cookieJar) options.headers['cookie'] = cookieJar;
   const res = await fetch(url, options);
   const setCookie = res.headers.get('set-cookie');
   let newCookies = cookieJar;
@@ -43,10 +39,119 @@ async function request(url, options = {}, cookieJar = '') {
   return { res, newCookies };
 }
 
+const FIRST = [
+  "Zara","Kelvin","Derek","Nadia","Felix","Ivy","Tristan","Mabel","Jasper","Celine",
+  "Victor","Elena","Marcus","Tessa","Damian","Ruby","Adrian","Sienna","Leon","Mira",
+  "Caleb","Naomi","Ethan","Freya","Oscar","Lydia","Julian","Vera","Simon","Clara",
+  "Miles","Daphne","Ronan","Esther","Blake","Bianca","Hugo","Selene","Troy","April",
+  "Wesley","Kiara","Andre","Jolie","Cyrus","Nina","Reed","Esme","Zane","Thea"
+];
+
+const LAST = [
+  "Whitaker","Sinclair","Donovan","Mercer","Holloway","Bennett","Prescott","Fletcher","Monroe","Callahan",
+  "Sterling","Crawford","Ellison","Harrington","Kendall","Montgomery","Sullivan","Pemberton","Winslow","Chandler",
+  "Thornton","Radcliffe","Shepherd","Langford","Maddox","Beckett","Huxley","Ashford","Griffin","Waverly",
+  "Kingsley","Bradford","Remington","Lawson","Carmichael","Weston","Finnegan","Davenport","Briar","Maxwell"
+];
+
+const pick = a => a[Math.floor(Math.random() * a.length)];
+
+function makeName() {
+  const f = pick(FIRST), l = pick(LAST);
+  const style = Math.random();
+  let n;
+  if (style < 0.28)      n = f + l;
+  else if (style < 0.50) n = f + "_" + l;
+  else if (style < 0.68) n = f.toLowerCase() + l.toLowerCase();
+  else if (style < 0.85) n = f + l.slice(0, 3);
+  else                   n = pick(FIRST) + pick(LAST).slice(0, 4);
+
+  if (!/\d/.test(n)) n += Math.floor(10 + Math.random() * 989);
+  return n;
+}
+
 (async () => {
+  // --- STEP 1: REGISTER ACCOUNTS IF BELOW GOAL ---
+  if (ledger.length < GOAL) {
+    console.log(`Need more accounts. Current: ${ledger.length}, Goal: ${GOAL}`);
+    const used = new Set(ledger.map(a => a.u));
+    let created = ledger.length;
+    let fail = 0, taken = 0, throttled = 0;
+    let running = true;
+
+    function nextName() {
+      let n = makeName(), i = 0;
+      while (used.has(n) && i < 20) {
+        n = makeName();
+        i++;
+      }
+      if (used.has(n)) n = n + Math.floor(10 + Math.random() * 89);
+      used.add(n);
+      return n;
+    }
+
+    const regStart = Date.now();
+
+    async function worker() {
+      while (running && created < GOAL) {
+        const username = nextName();
+        const password = "W" + Math.random().toString(36).slice(2) + "9!";
+        const name = username.replace(/[_0-9]/g, "").slice(0, 24) || username;
+
+        try {
+          const r = await fetch(`${API}/auth/register`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ username, password, name, adult: true, born: "2000-01-01" })
+          });
+
+          if (r.status === 409) {
+            taken++;
+            used.delete(username);
+            await sleep(150);
+            continue;
+          }
+          if (r.status === 429) {
+            throttled++;
+            used.delete(username);
+            await sleep(Math.min(60000, 5000 * throttled));
+            continue;
+          }
+          if (!r.ok) {
+            fail++;
+            used.delete(username);
+            if (fail > 100) { running = false; break; }
+            await sleep(1500);
+            continue;
+          }
+
+          const t = await r.json();
+          if (!t.user) {
+            fail++;
+            used.delete(username);
+            continue;
+          }
+
+          ledger.push({ u: username, p: password, at: Date.now() });
+          created++;
+          throttled = 0;
+
+          // Save progress continuously
+          fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+
+          await sleep(20 + Math.random() * 60);
+        } catch (e) {
+          await sleep(2000);
+        }
+      }
+    }
+
+    await Promise.all(Array.from({ length: WORKERS }, () => worker()));
+    console.log(`Registration finished. Total accounts in ledger: ${ledger.length}`);
+  }
+
+  // --- STEP 2: DRAIN / SEND MONEY FROM ACCOUNTS ---
   let cookieJar = '';
-  
-  // Login to template account
   const loginRes = await request(`${API}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -77,6 +182,9 @@ async function request(url, options = {}, cookieJar = '') {
 
   for (let i = 0; i < ledger.length; i++) {
     const a = ledger[i];
+    // Skip if already marked drained
+    if (a.drained) continue;
+
     try {
       let accCookie = '';
       const lr = await request(`${API}/auth/login`, {
@@ -115,15 +223,8 @@ async function request(url, options = {}, cookieJar = '') {
           const svRetry = await request(`${API}/save`, {}, accCookie);
           sv = svRetry.res.ok ? await svRetry.res.json() : null;
         } else {
-          const err = await br.res.text();
-          if (err.includes("stale")) {
-            const svRetry = await request(`${API}/save`, {}, accCookie);
-            sv = svRetry.res.ok ? await svRetry.res.json() : null;
-            if (!sv?.game) { fail++; continue; }
-          } else {
-            fail++;
-            continue;
-          }
+          fail++;
+          continue;
         }
       }
       
@@ -164,6 +265,7 @@ async function request(url, options = {}, cookieJar = '') {
           ok = true;
           total += amount;
           drained++;
+          a.drained = true;
         } else {
           const err = await sr.res.text();
           if (err.includes("try again")) {
@@ -180,19 +282,14 @@ async function request(url, options = {}, cookieJar = '') {
           break;
         }
       }
-
-      if ((drained + booted + repaired) % 50 === 0 && i > 0) {
-        const el = (Date.now() - start) / 1000;
-        const done = drained + fail + broke;
-        const rate = done / el;
-        const left = ledger.length - i - 1;
-        console.log(`progress ${done}/${ledger.length} | drained:${drained} ₦${total.toLocaleString()} | ${rate.toFixed(1)}/s | ETA ${Math.ceil(left / rate)}s`);
-      }
       await sleep(50);
     } catch (e) {
       fail++;
     }
   }
+
+  // Update ledger status with drained flags
+  fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
 
   const mins = ((Date.now() - start) / 60000).toFixed(1);
   console.log(`DONE in ${mins}min | booted:${booted} repaired:${repaired} drained:${drained} broke:${broke} fail:${fail} | ₦${total.toLocaleString()}`);
