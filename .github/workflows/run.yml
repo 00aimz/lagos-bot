@@ -17,5 +17,5 @@ jobs:
 
       - name: Run job.js
         env:
-          TO: ${{ secrets.TO bab158d8ed5d4fcb96ef}}
+          TO: ${{ secrets.TO }}
         run: node job.js
