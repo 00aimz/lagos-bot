@@ -1,0 +1,21 @@
+name: Run Account Automation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Run job.js
+        env:
+          TO: ${{ secrets.TO bab158d8ed5d4fcb96ef}}
+        run: node job.js
