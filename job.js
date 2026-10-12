@@ -2,8 +2,6 @@ const fs = require('fs');
 
 const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
-const GOAL = 1000;
-const WORKERS = 10;
 const FEE = 50, MIN = 100, SEED = 1096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 
@@ -20,9 +18,16 @@ if (fs.existsSync(ledgerPath)) {
     const rawData = fs.readFileSync(ledgerPath, 'utf8');
     if (rawData.trim()) ledger = JSON.parse(rawData);
   } catch (e) {
-    console.log("Error parsing ledger, starting fresh.");
+    console.log("Error parsing ledger file.");
   }
 }
+
+if (ledger.length === 0) {
+  console.log("No accounts found in store/accs.json! Please add your existing accounts to the file first.");
+  return;
+}
+
+console.log(`Loaded ${ledger.length} accounts from ledger. Starting drain process...`);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -39,118 +44,8 @@ async function request(url, options = {}, cookieJar = '') {
   return { res, newCookies };
 }
 
-const FIRST = [
-  "Zara","Kelvin","Derek","Nadia","Felix","Ivy","Tristan","Mabel","Jasper","Celine",
-  "Victor","Elena","Marcus","Tessa","Damian","Ruby","Adrian","Sienna","Leon","Mira",
-  "Caleb","Naomi","Ethan","Freya","Oscar","Lydia","Julian","Vera","Simon","Clara",
-  "Miles","Daphne","Ronan","Esther","Blake","Bianca","Hugo","Selene","Troy","April",
-  "Wesley","Kiara","Andre","Jolie","Cyrus","Nina","Reed","Esme","Zane","Thea"
-];
-
-const LAST = [
-  "Whitaker","Sinclair","Donovan","Mercer","Holloway","Bennett","Prescott","Fletcher","Monroe","Callahan",
-  "Sterling","Crawford","Ellison","Harrington","Kendall","Montgomery","Sullivan","Pemberton","Winslow","Chandler",
-  "Thornton","Radcliffe","Shepherd","Langford","Maddox","Beckett","Huxley","Ashford","Griffin","Waverly",
-  "Kingsley","Bradford","Remington","Lawson","Carmichael","Weston","Finnegan","Davenport","Briar","Maxwell"
-];
-
-const pick = a => a[Math.floor(Math.random() * a.length)];
-
-function makeName() {
-  const f = pick(FIRST), l = pick(LAST);
-  const style = Math.random();
-  let n;
-  if (style < 0.28)      n = f + l;
-  else if (style < 0.50) n = f + "_" + l;
-  else if (style < 0.68) n = f.toLowerCase() + l.toLowerCase();
-  else if (style < 0.85) n = f + l.slice(0, 3);
-  else                   n = pick(FIRST) + pick(LAST).slice(0, 4);
-
-  if (!/\d/.test(n)) n += Math.floor(10 + Math.random() * 989);
-  return n;
-}
-
 (async () => {
-  // --- STEP 1: REGISTER ACCOUNTS IF BELOW GOAL ---
-  if (ledger.length < GOAL) {
-    console.log(`Need more accounts. Current: ${ledger.length}, Goal: ${GOAL}`);
-    const used = new Set(ledger.map(a => a.u));
-    let created = ledger.length;
-    let fail = 0, taken = 0, throttled = 0;
-    let running = true;
-
-    function nextName() {
-      let n = makeName(), i = 0;
-      while (used.has(n) && i < 20) {
-        n = makeName();
-        i++;
-      }
-      if (used.has(n)) n = n + Math.floor(10 + Math.random() * 89);
-      used.add(n);
-      return n;
-    }
-
-    const regStart = Date.now();
-
-    async function worker() {
-      while (running && created < GOAL) {
-        const username = nextName();
-        const password = "W" + Math.random().toString(36).slice(2) + "9!";
-        const name = username.replace(/[_0-9]/g, "").slice(0, 24) || username;
-
-        try {
-          const r = await fetch(`${API}/auth/register`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ username, password, name, adult: true, born: "2000-01-01" })
-          });
-
-          if (r.status === 409) {
-            taken++;
-            used.delete(username);
-            await sleep(150);
-            continue;
-          }
-          if (r.status === 429) {
-            throttled++;
-            used.delete(username);
-            await sleep(Math.min(60000, 5000 * throttled));
-            continue;
-          }
-          if (!r.ok) {
-            fail++;
-            used.delete(username);
-            if (fail > 100) { running = false; break; }
-            await sleep(1500);
-            continue;
-          }
-
-          const t = await r.json();
-          if (!t.user) {
-            fail++;
-            used.delete(username);
-            continue;
-          }
-
-          ledger.push({ u: username, p: password, at: Date.now() });
-          created++;
-          throttled = 0;
-
-          // Save progress continuously
-          fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
-
-          await sleep(20 + Math.random() * 60);
-        } catch (e) {
-          await sleep(2000);
-        }
-      }
-    }
-
-    await Promise.all(Array.from({ length: WORKERS }, () => worker()));
-    console.log(`Registration finished. Total accounts in ledger: ${ledger.length}`);
-  }
-
-  // --- STEP 2: DRAIN / SEND MONEY FROM ACCOUNTS ---
+  // --- LOGIN WITH TEMPLATE TO GET BASE GAME STATE ---
   let cookieJar = '';
   const loginRes = await request(`${API}/auth/login`, {
     method: "POST",
@@ -159,7 +54,7 @@ function makeName() {
   }, cookieJar);
   
   if (!loginRes.res.ok) {
-    console.log("template login failed — check creds");
+    console.log("Template login failed — check template credentials");
     return;
   }
   cookieJar = loginRes.newCookies;
@@ -169,13 +64,13 @@ function makeName() {
   let clean = saveJson?.game;
 
   if (!clean) {
-    console.log("template account has no game state");
+    console.log("Template account has no game state");
     return;
   }
   
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("template ready — drain armed,", ledger.length, "accounts");
+  console.log("Template ready — drain armed for", ledger.length, "accounts");
 
   let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, total = 0;
   const start = Date.now();
