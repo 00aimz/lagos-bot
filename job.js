@@ -5,29 +5,56 @@ const TO = process.env.TO;
 const FEE = 50, MIN = 100, SEED = 1096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 
-const ledgerPath = './store/accs.json';
+// Your Discord Webhook URL for live phone notifications
+const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1559314392523345931/tTqKtp07m_oSqDyQuMj7UVD5YXjxSWDOXgVfrvUDcZbsEaBslqFoKZAqTx2XPZTEBXkM";
 
-// Ensure store directory exists
-if (!fs.existsSync('./store')) {
-  fs.mkdirSync('./store');
+// Configure how many hours you want it to run (e.g. 10 hours)
+// Set to 0 to run indefinitely until stopped manually.
+const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
+
+const storeDir = './store';
+if (!fs.existsSync(storeDir)) {
+  fs.mkdirSync(storeDir);
 }
 
-let ledger = [];
-if (fs.existsSync(ledgerPath)) {
-  try {
-    const rawData = fs.readFileSync(ledgerPath, 'utf8');
-    if (rawData.trim()) ledger = JSON.parse(rawData);
-  } catch (e) {
-    console.log("Error parsing ledger file.");
+// Fisher-Yates shuffle helper to randomize array order for multi-window independence
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
   }
+  return array;
+}
+
+// Automatically scan and load all account files starting with "accs"
+let ledger = [];
+
+try {
+  const files = fs.readdirSync(storeDir);
+  for (const file of files) {
+    if (file.startsWith('accs')) {
+      const filePath = `${storeDir}/${file}`;
+      const rawData = fs.readFileSync(filePath, 'utf8');
+      if (rawData.trim()) {
+        const parsed = JSON.parse(rawData);
+        if (Array.isArray(parsed)) {
+          ledger = ledger.concat(parsed);
+          console.log(`[INIT] Loaded ${parsed.length} accounts from ${file}`);
+        }
+      }
+    }
+  }
+} catch (e) {
+  console.log("[INIT] Error reading ledger files:", e.message);
 }
 
 if (ledger.length === 0) {
-  console.log("No accounts found in store/accs.json! Please add your existing accounts to the file first.");
+  console.log("[ERROR] No accounts found in the store folder!");
   return;
 }
 
-console.log(`Loaded ${ledger.length} accounts from ledger. Starting drain process...`);
+// Randomize order on startup so each open window starts at a completely different place
+shuffleArray(ledger);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -44,7 +71,38 @@ async function request(url, options = {}, cookieJar = '') {
   return { res, newCookies };
 }
 
+async function sendDiscordAlert(message) {
+  if (!DISCORD_WEBHOOK_URL) return;
+  try {
+    await fetch(DISCORD_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: message })
+    });
+  } catch (e) {
+    // Ignore network blips so it doesn't interrupt the bot
+  }
+}
+
+function formatElapsedTime(ms) {
+  const seconds = Math.floor((ms / 1000) % 60);
+  const minutes = Math.floor((ms / (1000 * 60)) % 60);
+  const hours = Math.floor(ms / (1000 * 60 * 60));
+  return `${hours}h ${minutes}m ${seconds}s`;
+}
+
 (async () => {
+  console.log(`\n==================================================`);
+  console.log(`        LAGOS BOT - AUTOMATED DRAIN ENGINE        `);
+  console.log(`==================================================`);
+  console.log(`Target Destination ID : ${TO}`);
+  console.log(`Total Unique Accounts : ${ledger.length}`);
+  console.log(`Order Strategy        : Randomized Continuous (Multi-Window)`);
+  console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
+  console.log(`==================================================\n`);
+
+  await sendDiscordAlert(`🚀 **Lagos Bot Window Started!**\nTarget ID: \`${TO}\`\nLoaded Accounts: **${ledger.length}** (Randomized Instant Loop)`);
+
   // --- LOGIN WITH TEMPLATE TO GET BASE GAME STATE ---
   let cookieJar = '';
   const loginRes = await request(`${API}/auth/login`, {
@@ -54,7 +112,8 @@ async function request(url, options = {}, cookieJar = '') {
   }, cookieJar);
   
   if (!loginRes.res.ok) {
-    console.log("Template login failed — check template credentials");
+    console.log("[ERROR] Template login failed — check template credentials");
+    await sendDiscordAlert(`❌ **Error:** Template login failed. Check credentials.`);
     return;
   }
   cookieJar = loginRes.newCookies;
@@ -64,128 +123,165 @@ async function request(url, options = {}, cookieJar = '') {
   let clean = saveJson?.game;
 
   if (!clean) {
-    console.log("Template account has no game state");
+    console.log("[ERROR] Template account has no game state");
     return;
   }
   
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("Template ready — drain armed for", ledger.length, "accounts");
+  console.log("[READY] Template state secured. Starting instant random loop...\n");
 
-  let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, total = 0;
-  const start = Date.now();
+  const sessionStart = Date.now();
+  let sessionTotalSent = 0;
+  let globalCycles = 0;
 
-  for (let i = 0; i < ledger.length; i++) {
-    const a = ledger[i];
-    // Skip if already marked drained
-    if (a.drained) continue;
+  while (true) {
+    const now = Date.now();
+    const elapsedMs = now - sessionStart;
+    
+    if (TARGET_HOURS > 0 && elapsedMs >= TARGET_HOURS * 3600 * 1000) {
+      console.log(`\n[INFO] Target duration of ${TARGET_HOURS} hours reached. Stopping script.`);
+      await sendDiscordAlert(`⏱️ **Target duration of ${TARGET_HOURS} hours reached. Bot stopped.**\nTotal Sent: ₦${sessionTotalSent.toLocaleString()}`);
+      break;
+    }
 
-    try {
-      let accCookie = '';
-      const lr = await request(`${API}/auth/login`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: a.u, password: a.p })
-      }, accCookie);
+    globalCycles++;
+    console.log(`\n--- STARTING DRAIN CYCLE #${globalCycles} (Elapsed: ${formatElapsedTime(elapsedMs)}) ---`);
 
-      if (!lr.res.ok) { fail++; continue; }
-      accCookie = lr.newCookies;
+    let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
 
-      const svReq = await request(`${API}/save`, {}, accCookie);
-      let sv = svReq.res.ok ? await svReq.res.json() : null;
+    for (let i = 0; i < ledger.length; i++) {
+      const a = ledger[i];
+      const progressTag = `[Cycle ${globalCycles} | ${i + 1}/${ledger.length}]`;
 
-      if (!sv?.game) {
-        const meReq = await request(`${API}/auth/me`, {}, accCookie);
-        const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
-        const oid = me?.user?.id;
-        
-        if (!oid || me?.user?.username !== a.u) { fail++; continue; }
-        
-        const g = JSON.parse(JSON.stringify(clean));
-        g.sim.name = a.u;
-        g.owner = oid;
-        g.money = SEED;
-
-        const br = await request(`${API}/save`, {
-          method: "PUT",
+      try {
+        let accCookie = '';
+        const lr = await request(`${API}/auth/login`, {
+          method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 0 })
+          body: JSON.stringify({ username: a.u, password: a.p })
         }, accCookie);
 
-        if (br.res.ok) {
-          booted++;
-          await sleep(150);
-          const svRetry = await request(`${API}/save`, {}, accCookie);
-          sv = svRetry.res.ok ? await svRetry.res.json() : null;
-        } else {
+        if (!lr.res.ok) {
           fail++;
           continue;
         }
-      }
-      
-      if (!sv?.game) { fail++; continue; }
+        accCookie = lr.newCookies;
 
-      if (Number(sv.game.money) < MIN + FEE) {
-        const g = JSON.parse(JSON.stringify(sv.game));
-        g.money = SEED;
-        const rr = await request(`${API}/save`, {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
-        }, accCookie);
+        const svReq = await request(`${API}/save`, {}, accCookie);
+        let sv = svReq.res.ok ? await svReq.res.json() : null;
 
-        if (rr.res.ok) {
-          repaired++;
-          await sleep(150);
-          const svRetry = await request(`${API}/save`, {}, accCookie);
-          sv = svRetry.res.ok ? await svRetry.res.json() : null;
-        } else {
+        if (!sv?.game) {
+          const meReq = await request(`${API}/auth/me`, {}, accCookie);
+          const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
+          const oid = me?.user?.id;
+          
+          if (!oid || me?.user?.username !== a.u) {
+            fail++;
+            continue;
+          }
+          
+          const g = JSON.parse(JSON.stringify(clean));
+          g.sim.name = a.u;
+          g.owner = oid;
+          g.money = SEED;
+
+          const br = await request(`${API}/save`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 0 })
+          }, accCookie);
+
+          if (br.res.ok) {
+            booted++;
+            await sleep(150);
+            const svRetry = await request(`${API}/save`, {}, accCookie);
+            sv = svRetry.res.ok ? await svRetry.res.json() : null;
+          } else {
+            fail++;
+            continue;
+          }
+        }
+        
+        if (!sv?.game) {
+          fail++;
+          continue;
+        }
+
+        if (Number(sv.game.money) < MIN + FEE) {
+          const g = JSON.parse(JSON.stringify(sv.game));
+          g.money = SEED;
+          const rr = await request(`${API}/save`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
+          }, accCookie);
+
+          if (rr.res.ok) {
+            repaired++;
+            await sleep(150);
+            const svRetry = await request(`${API}/save`, {}, accCookie);
+            sv = svRetry.res.ok ? await svRetry.res.json() : null;
+          } else {
+            broke++;
+            continue;
+          }
+        }
+
+        let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
+        if (amount < MIN) {
           broke++;
           continue;
         }
-      }
 
-      let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
-      if (amount < MIN) { broke++; continue; }
+        let ok = false;
+        for (let tries = 0; tries < 3 && !ok; tries++) {
+          const sr = await request(`${API}/send`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ to: TO, amount })
+          }, accCookie);
 
-      let ok = false;
-      for (let tries = 0; tries < 3 && !ok; tries++) {
-        const sr = await request(`${API}/send`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ to: TO, amount })
-        }, accCookie);
-
-        if (sr.res.ok) {
-          ok = true;
-          total += amount;
-          drained++;
-          a.drained = true;
-        } else {
-          const err = await sr.res.text();
-          if (err.includes("try again")) {
-            await sleep(3000);
-            continue;
+          if (sr.res.ok) {
+            ok = true;
+            cycleTotal += amount;
+            sessionTotalSent += amount;
+            drained++;
+            
+            const logMsg = `${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
+            console.log(logMsg);
+            
+            await sendDiscordAlert(`💸 **Account Drained:** \`${a.u}\` sent **₦${amount.toLocaleString()}**\n📊 **Session Total:** ₦${sessionTotalSent.toLocaleString()}`);
+          } else {
+            const err = await sr.res.text();
+            if (err.includes("try again")) {
+              await sleep(3000);
+              continue;
+            }
+            const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
+            if (have) {
+              amount = have - FEE;
+              await sleep(800);
+              continue;
+            }
+            fail++;
+            break;
           }
-          const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
-          if (have) {
-            amount = have - FEE;
-            await sleep(800);
-            continue;
-          }
-          fail++;
-          break;
         }
+        await sleep(50);
+      } catch (e) {
+        fail++;
       }
-      await sleep(50);
-    } catch (e) {
-      fail++;
     }
+
+    const cycleSummary = `🔄 **Cycle #${globalCycles} Completed**\n- Drained: ${drained}\n- Cycle Total: ₦${cycleTotal.toLocaleString()}\n- **Cumulative Total: ₦${sessionTotalSent.toLocaleString()}**\n- Runtime: ${formatElapsedTime(Date.now() - sessionStart)}`;
+    console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
+    console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
+    console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Session Total: ₦${sessionTotalSent.toLocaleString()}`);
+    
+    await sendDiscordAlert(cycleSummary);
+
+    // Re-shuffle randomly and loop instantly with zero delay
+    shuffleArray(ledger);
   }
-
-  // Update ledger status with drained flags
-  fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
-
-  const mins = ((Date.now() - start) / 60000).toFixed(1);
-  console.log(`DONE in ${mins}min | booted:${booted} repaired:${repaired} drained:${drained} broke:${broke} fail:${fail} | ₦${total.toLocaleString()}`);
 })();
