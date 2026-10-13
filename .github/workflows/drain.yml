@@ -23,5 +23,5 @@ jobs:
         env:
           TO: ${{ secrets.TO_DESTINATION_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DURATION_HOURS: "5.5" # Ensures clean shutdown before GitHub's 6h hard limit
+          DURATION_HOURS: "9" # Ensures clean shutdown before GitHub's 6h hard limit
         run: node job.js
