@@ -108,7 +108,7 @@ function formatElapsedTime(ms) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: TEMPLATE.u, password: TEMPLATE.p })
   }, cookieJar);
-  
+
   if (!loginRes.res.ok) {
     console.log("[ERROR] Template login failed — check template credentials");
     await sendDiscordAlert(`❌ **Error:** Template login failed. Check credentials.`);
@@ -124,19 +124,20 @@ function formatElapsedTime(ms) {
     console.log("[ERROR] Template account has no game state");
     return;
   }
-  
+
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
   console.log("[READY] Template state secured. Starting instant random loop...\n");
 
   const sessionStart = Date.now();
+  let lastHourlyReportTime = sessionStart; // Tracks the last time an hourly summary was sent
   let sessionTotalSent = 0;
   let globalCycles = 0;
 
   while (true) {
     const now = Date.now();
     const elapsedMs = now - sessionStart;
-    
+
     // Safety check for GitHub Actions runner time limit
     if (TARGET_HOURS > 0 && elapsedMs >= TARGET_HOURS * 3600 * 1000) {
       console.log(`\n[INFO] Target duration of ${TARGET_HOURS} hours reached. Gracefully stopping script.`);
@@ -174,12 +175,12 @@ function formatElapsedTime(ms) {
           const meReq = await request(`${API}/auth/me`, {}, accCookie);
           const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
           const oid = me?.user?.id;
-          
+
           if (!oid || me?.user?.username !== a.u) {
             fail++;
             continue;
           }
-          
+
           const g = JSON.parse(JSON.stringify(clean));
           g.sim.name = a.u;
           g.owner = oid;
@@ -201,7 +202,7 @@ function formatElapsedTime(ms) {
             continue;
           }
         }
-        
+
         if (!sv?.game) {
           fail++;
           continue;
@@ -246,11 +247,12 @@ function formatElapsedTime(ms) {
             cycleTotal += amount;
             sessionTotalSent += amount;
             drained++;
-            
+
             const logMsg = `${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
             console.log(logMsg);
             
-            await sendDiscordAlert(`💸 **Account Drained:** \`${a.u}\` sent **₦${amount.toLocaleString()}**\n📊 **Session Total:** ₦${sessionTotalSent.toLocaleString()}`);
+            // NOTE: Individual drain alert removed to avoid spamming Discord. 
+            // If you want individual alerts kept, you can re-enable `sendDiscordAlert(...)` here.
           } else {
             const err = await sr.res.text();
             if (err.includes("try again")) {
@@ -273,12 +275,16 @@ function formatElapsedTime(ms) {
       }
     }
 
-    const cycleSummary = `🔄 **Cycle #${globalCycles} Completed**\n- Drained: ${drained}\n- Cycle Total: ₦${cycleTotal.toLocaleString()}\n- **Cumulative Total: ₦${sessionTotalSent.toLocaleString()}**\n- Runtime: ${formatElapsedTime(Date.now() - sessionStart)}`;
     console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
     console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
     console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Session Total: ₦${sessionTotalSent.toLocaleString()}`);
-    
-    await sendDiscordAlert(cycleSummary);
+
+    // Check if 1 hour (3600000 ms) has passed since the last report
+    if (Date.now() - lastHourlyReportTime >= 3600000) {
+      const hourlySummary = `⏳ **Hourly Status Report** (Elapsed: ${formatElapsedTime(Date.now() - sessionStart)})\n- Completed Cycles: ${globalCycles}\n- **Cumulative Total Sent:** ₦${sessionTotalSent.toLocaleString()}`;
+      await sendDiscordAlert(hourlySummary);
+      lastHourlyReportTime = Date.now(); // Reset the timer
+    }
 
     // Re-shuffle array for continuous non-stop processing
     shuffleArray(ledger);
