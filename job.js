@@ -2,7 +2,8 @@ const fs = require('fs');
 
 const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "https://discord.com/api/webhooks/1559314392523345931/tTqKtp07m_oSqDyQuMj7UVD5YXjxSWDOXgVfrvUDcZbsEaBslqFoKZAqTx2XPZTEBXkM";
+// Strictly load from environment variable / secret
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
@@ -250,9 +251,6 @@ function formatElapsedTime(ms) {
 
             const logMsg = `${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
             console.log(logMsg);
-            
-            // NOTE: Individual drain alert removed to avoid spamming Discord. 
-            // If you want individual alerts kept, you can re-enable `sendDiscordAlert(...)` here.
           } else {
             const err = await sr.res.text();
             if (err.includes("try again")) {
@@ -279,11 +277,11 @@ function formatElapsedTime(ms) {
     console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
     console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Session Total: ₦${sessionTotalSent.toLocaleString()}`);
 
-    // Check if 1 hour (3600000 ms) has passed since the last report
+    // Send hourly update if 1 hour has elapsed
     if (Date.now() - lastHourlyReportTime >= 3600000) {
       const hourlySummary = `⏳ **Hourly Status Report** (Elapsed: ${formatElapsedTime(Date.now() - sessionStart)})\n- Completed Cycles: ${globalCycles}\n- **Cumulative Total Sent:** ₦${sessionTotalSent.toLocaleString()}`;
       await sendDiscordAlert(hourlySummary);
-      lastHourlyReportTime = Date.now(); // Reset the timer
+      lastHourlyReportTime = Date.now();
     }
 
     // Re-shuffle array for continuous non-stop processing
