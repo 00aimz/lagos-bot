@@ -60,4 +60,4 @@ Step 3: Trigger the Workflow
  * Manually: Go to the Actions tab on GitHub, select Lagos Bot Cloud Drainer, and click Run workflow.
 Safety & Configuration Notes
  * Optional Webhook: If you don't supply a DISCORD_WEBHOOK_URL, the script will skip notifications entirely and continue running smoothly in the background.
- * GitHub Actions Limit: GitHub Actions workflows have a hard timeout limit of 6 hours per job. The workflow sets DURATION_HOURS: "5.5" to ensure the bot shuts down gracefully right before the limit is reached.
+ * GitHub Actions Limit: GitHub Actions workflows have a hard timeout limit of 6 hours per job. The workflow sets DURATION_HOURS: "24" to ensure the bot shuts down gracefully right before the limit is reached.
