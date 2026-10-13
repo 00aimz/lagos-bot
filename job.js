@@ -4,7 +4,7 @@ const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "https://discord.com/api/webhooks/1559314392523345931/tTqKtp07m_oSqDyQuMj7UVD5YXjxSWDOXgVfrvUDcZbsEaBslqFoKZAqTx2XPZTEBXkM";
 
-const FEE = 50, MIN = 100, SEED = 100096000;
+const FEE = 50, MIN = 100, SEED = 20000000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 
 // Target duration in hours (e.g. 5.5 for GitHub Actions). Default is infinite (0) if unset.
