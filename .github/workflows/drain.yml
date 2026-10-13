@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs automatically every 6 hours
     - cron: '0 */6 * * *'
-  workflow_dispatch: # Allows manual trigger from your phone or browser anytime
+  workflow_dispatch: # Allows manual trigger anytime
 
 jobs:
   run-drainer:
@@ -23,5 +23,5 @@ jobs:
         env:
           TO: ${{ secrets.TO_DESTINATION_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DURATION_HOURS: "16" # Ensures clean shutdown before GitHub's 6h hard limit
+          DURATION_HOURS: "24" # Safe duration under GitHub's 6h max execution cap
         run: node job.js
