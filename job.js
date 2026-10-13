@@ -2,14 +2,12 @@ const fs = require('fs');
 
 const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "https://discord.com/api/webhooks/1559314392523345931/tTqKtp07m_oSqDyQuMj7UVD5YXjxSWDOXgVfrvUDcZbsEaBslqFoKZAqTx2XPZTEBXkM";
+
 const FEE = 50, MIN = 100, SEED = 1096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 
-// Your Discord Webhook URL for live phone notifications
-const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1559314392523345931/tTqKtp07m_oSqDyQuMj7UVD5YXjxSWDOXgVfrvUDcZbsEaBslqFoKZAqTx2XPZTEBXkM";
-
-// Configure how many hours you want it to run (e.g. 10 hours)
-// Set to 0 to run indefinitely until stopped manually.
+// Target duration in hours (e.g. 5.5 for GitHub Actions). Default is infinite (0) if unset.
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
 
 const storeDir = './store';
@@ -17,7 +15,7 @@ if (!fs.existsSync(storeDir)) {
   fs.mkdirSync(storeDir);
 }
 
-// Fisher-Yates shuffle helper to randomize array order for multi-window independence
+// Fisher-Yates shuffle helper to randomize array order
 function shuffleArray(array) {
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -53,7 +51,7 @@ if (ledger.length === 0) {
   return;
 }
 
-// Randomize order on startup so each open window starts at a completely different place
+// Randomize order on startup
 shuffleArray(ledger);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -97,11 +95,11 @@ function formatElapsedTime(ms) {
   console.log(`==================================================`);
   console.log(`Target Destination ID : ${TO}`);
   console.log(`Total Unique Accounts : ${ledger.length}`);
-  console.log(`Order Strategy        : Randomized Continuous (Multi-Window)`);
+  console.log(`Order Strategy        : Randomized Continuous`);
   console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
   console.log(`==================================================\n`);
 
-  await sendDiscordAlert(`🚀 **Lagos Bot Window Started!**\nTarget ID: \`${TO}\`\nLoaded Accounts: **${ledger.length}** (Randomized Instant Loop)`);
+  await sendDiscordAlert(`🚀 **Lagos Bot Runner Started!**\nTarget ID: \`${TO}\`\nLoaded Accounts: **${ledger.length}**`);
 
   // --- LOGIN WITH TEMPLATE TO GET BASE GAME STATE ---
   let cookieJar = '';
@@ -139,9 +137,10 @@ function formatElapsedTime(ms) {
     const now = Date.now();
     const elapsedMs = now - sessionStart;
     
+    // Safety check for GitHub Actions runner time limit
     if (TARGET_HOURS > 0 && elapsedMs >= TARGET_HOURS * 3600 * 1000) {
-      console.log(`\n[INFO] Target duration of ${TARGET_HOURS} hours reached. Stopping script.`);
-      await sendDiscordAlert(`⏱️ **Target duration of ${TARGET_HOURS} hours reached. Bot stopped.**\nTotal Sent: ₦${sessionTotalSent.toLocaleString()}`);
+      console.log(`\n[INFO] Target duration of ${TARGET_HOURS} hours reached. Gracefully stopping script.`);
+      await sendDiscordAlert(`⏱️ **Target run duration of ${TARGET_HOURS}h reached.** Runner exiting gracefully.\n**Session Total Sent:** ₦${sessionTotalSent.toLocaleString()}`);
       break;
     }
 
@@ -281,7 +280,7 @@ function formatElapsedTime(ms) {
     
     await sendDiscordAlert(cycleSummary);
 
-    // Re-shuffle randomly and loop instantly with zero delay
+    // Re-shuffle array for continuous non-stop processing
     shuffleArray(ledger);
   }
 })();
