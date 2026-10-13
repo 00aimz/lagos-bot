@@ -1,0 +1,26 @@
+name: Lagos Bot Drainer
+
+on:
+  schedule:
+    # Runs every 6 hours automatically (you can change this cron schedule)
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Allows you to trigger it manually from GitHub anytime from your phone
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Drain Job
+        env:
+          TO: ${{ secrets.TO_DESTINATION_ID }}
+          DURATION_HOURS: "5" # Run for up to 5 hours per workflow execution
+        run: node job.js
