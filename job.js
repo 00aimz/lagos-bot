@@ -27,6 +27,7 @@ function shuffleArray(array) {
 
 // Automatically scan and load all account files starting with "accs"
 let ledger = [];
+const ledgerPath = './store/accs.json';
 
 try {
   const files = fs.readdirSync(storeDir);
@@ -96,7 +97,7 @@ function formatElapsedTime(ms) {
   console.log(`==================================================`);
   console.log(`Target Destination ID : ${TO}`);
   console.log(`Total Unique Accounts : ${ledger.length}`);
-  console.log(`Order Strategy        : Randomized Continuous`);
+  console.log(`Order Strategy        : Randomized Concurrent (5x Speed)`);
   console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
   console.log(`==================================================\n`);
 
@@ -128,10 +129,10 @@ function formatElapsedTime(ms) {
 
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("[READY] Template state secured. Starting instant random loop...\n");
+  console.log("[READY] Template state secured. Starting high-speed concurrent loop...\n");
 
   const sessionStart = Date.now();
-  let lastHourlyReportTime = sessionStart; // Tracks the last time an hourly summary was sent
+  let lastHourlyReportTime = sessionStart;
   let sessionTotalSent = 0;
   let globalCycles = 0;
 
@@ -139,7 +140,6 @@ function formatElapsedTime(ms) {
     const now = Date.now();
     const elapsedMs = now - sessionStart;
 
-    // Safety check for GitHub Actions runner time limit
     if (TARGET_HOURS > 0 && elapsedMs >= TARGET_HOURS * 3600 * 1000) {
       console.log(`\n[INFO] Target duration of ${TARGET_HOURS} hours reached. Gracefully stopping script.`);
       await sendDiscordAlert(`⏱️ **Target run duration of ${TARGET_HOURS}h reached.** Runner exiting gracefully.\n**Session Total Sent:** ₦${sessionTotalSent.toLocaleString()}`);
@@ -151,140 +151,148 @@ function formatElapsedTime(ms) {
 
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
 
-    for (let i = 0; i < ledger.length; i++) {
-      const a = ledger[i];
-      const progressTag = `[Cycle ${globalCycles} | ${i + 1}/${ledger.length}]`;
+    // Process accounts in parallel chunks of 5 to boost speed safely
+    const CONCURRENT_LIMIT = 5;
 
-      try {
-        let accCookie = '';
-        const lr = await request(`${API}/auth/login`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: a.u, password: a.p })
-        }, accCookie);
+    for (let i = 0; i < ledger.length; i += CONCURRENT_LIMIT) {
+      const chunk = ledger.slice(i, i + CONCURRENT_LIMIT);
 
-        if (!lr.res.ok) {
-          fail++;
-          continue;
-        }
-        accCookie = lr.newCookies;
+      await Promise.all(chunk.map(async (a, indexWithinChunk) => {
+        const actualIndex = i + indexWithinChunk;
+        const progressTag = `[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}]`;
 
-        const svReq = await request(`${API}/save`, {}, accCookie);
-        let sv = svReq.res.ok ? await svReq.res.json() : null;
-
-        if (!sv?.game) {
-          const meReq = await request(`${API}/auth/me`, {}, accCookie);
-          const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
-          const oid = me?.user?.id;
-
-          if (!oid || me?.user?.username !== a.u) {
-            fail++;
-            continue;
-          }
-
-          const g = JSON.parse(JSON.stringify(clean));
-          g.sim.name = a.u;
-          g.owner = oid;
-          g.money = SEED;
-
-          const br = await request(`${API}/save`, {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 0 })
-          }, accCookie);
-
-          if (br.res.ok) {
-            booted++;
-            await sleep(150);
-            const svRetry = await request(`${API}/save`, {}, accCookie);
-            sv = svRetry.res.ok ? await svRetry.res.json() : null;
-          } else {
-            fail++;
-            continue;
-          }
-        }
-
-        if (!sv?.game) {
-          fail++;
-          continue;
-        }
-
-        if (Number(sv.game.money) < MIN + FEE) {
-          const g = JSON.parse(JSON.stringify(sv.game));
-          g.money = SEED;
-          const rr = await request(`${API}/save`, {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
-          }, accCookie);
-
-          if (rr.res.ok) {
-            repaired++;
-            await sleep(150);
-            const svRetry = await request(`${API}/save`, {}, accCookie);
-            sv = svRetry.res.ok ? await svRetry.res.json() : null;
-          } else {
-            broke++;
-            continue;
-          }
-        }
-
-        let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
-        if (amount < MIN) {
-          broke++;
-          continue;
-        }
-
-        let ok = false;
-        for (let tries = 0; tries < 3 && !ok; tries++) {
-          const sr = await request(`${API}/send`, {
+        try {
+          let accCookie = '';
+          const lr = await request(`${API}/auth/login`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ to: TO, amount })
+            body: JSON.stringify({ username: a.u, password: a.p })
           }, accCookie);
 
-          if (sr.res.ok) {
-            ok = true;
-            cycleTotal += amount;
-            sessionTotalSent += amount;
-            drained++;
-
-            const logMsg = `${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
-            console.log(logMsg);
-          } else {
-            const err = await sr.res.text();
-            if (err.includes("try again")) {
-              await sleep(3000);
-              continue;
-            }
-            const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
-            if (have) {
-              amount = have - FEE;
-              await sleep(800);
-              continue;
-            }
+          if (!lr.res.ok) {
             fail++;
-            break;
+            return;
           }
+          accCookie = lr.newCookies;
+
+          const svReq = await request(`${API}/save`, {}, accCookie);
+          let sv = svReq.res.ok ? await svReq.res.json() : null;
+
+          if (!sv?.game) {
+            const meReq = await request(`${API}/auth/me`, {}, accCookie);
+            const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
+            const oid = me?.user?.id;
+
+            if (!oid || me?.user?.username !== a.u) {
+              fail++;
+              return;
+            }
+
+            const g = JSON.parse(JSON.stringify(clean));
+            g.sim.name = a.u;
+            g.owner = oid;
+            g.money = SEED;
+
+            const br = await request(`${API}/save`, {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 0 })
+            }, accCookie);
+
+            if (br.res.ok) {
+              booted++;
+              await sleep(100);
+              const svRetry = await request(`${API}/save`, {}, accCookie);
+              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+            } else {
+              fail++;
+              return;
+            }
+          }
+
+          if (!sv?.game) {
+            fail++;
+            return;
+          }
+
+          if (Number(sv.game.money) < MIN + FEE) {
+            const g = JSON.parse(JSON.stringify(sv.game));
+            g.money = SEED;
+            const rr = await request(`${API}/save`, {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
+            }, accCookie);
+
+            if (rr.res.ok) {
+              repaired++;
+              await sleep(100);
+              const svRetry = await request(`${API}/save`, {}, accCookie);
+              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+            } else {
+              broke++;
+              return;
+            }
+          }
+
+          let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
+          if (amount < MIN) {
+            broke++;
+            return;
+          }
+
+          let ok = false;
+          for (let tries = 0; tries < 3 && !ok; tries++) {
+            const sr = await request(`${API}/send`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ to: TO, amount })
+            }, accCookie);
+
+            if (sr.res.ok) {
+              ok = true;
+              cycleTotal += amount;
+              sessionTotalSent += amount;
+              drained++;
+
+              const logMsg = `${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
+              console.log(logMsg);
+            } else {
+              const err = await sr.res.text();
+              if (err.includes("try again")) {
+                await sleep(2000);
+                continue;
+              }
+              const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
+              if (have) {
+                amount = have - FEE;
+                await sleep(500);
+                continue;
+              }
+              fail++;
+              break;
+            }
+          }
+          await sleep(20);
+        } catch (e) {
+          fail++;
         }
-        await sleep(50);
-      } catch (e) {
-        fail++;
-      }
+      }));
+
+      // Save progress periodically after each chunk
+      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
     }
 
     console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
     console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
     console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Session Total: ₦${sessionTotalSent.toLocaleString()}`);
 
-    // Send hourly update if 1 hour has elapsed
     if (Date.now() - lastHourlyReportTime >= 3600000) {
       const hourlySummary = `⏳ **Hourly Status Report** (Elapsed: ${formatElapsedTime(Date.now() - sessionStart)})\n- Completed Cycles: ${globalCycles}\n- **Cumulative Total Sent:** ₦${sessionTotalSent.toLocaleString()}`;
       await sendDiscordAlert(hourlySummary);
       lastHourlyReportTime = Date.now();
     }
 
-    // Re-shuffle array for continuous non-stop processing
     shuffleArray(ledger);
   }
 })();
