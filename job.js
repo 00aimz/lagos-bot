@@ -152,7 +152,7 @@ function formatElapsedTime(ms) {
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
 
     // Process accounts in parallel chunks of 5 to boost speed safely
-    const CONCURRENT_LIMIT = 5;
+    const CONCURRENT_LIMIT = 15;
 
     for (let i = 0; i < ledger.length; i += CONCURRENT_LIMIT) {
       const chunk = ledger.slice(i, i + CONCURRENT_LIMIT);
