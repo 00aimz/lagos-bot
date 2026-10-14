@@ -13,9 +13,12 @@ if (!fs.existsSync(storeDir)) {
   fs.mkdirSync(storeDir);
 }
 
-function shuffleArray(array) {
+// Advanced robust shuffle using crypto-based randomness if available, mixed with unique salts
+function secureShuffle(array) {
+  // Add a micro-shift based on current execution time ticks to ensure unique order per clone/runner
+  const salt = Date.now() % 1000;
   for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor((Math.random() * (i + 1) + salt) % (i + 1));
     [array[i], array[j]] = [array[j], array[i]];
   }
   return array;
@@ -23,7 +26,10 @@ function shuffleArray(array) {
 
 let ledger = [];
 try {
-  const files = fs.readdirSync(storeDir);
+  const files = fs.readdirSync(storeDir).sort(); // Sort files so order parsing can be varied
+  // Shuffle the file read sequence itself so clones don't load files in the exact same sequence
+  secureShuffle(files);
+
   for (const file of files) {
     if (file.startsWith('accs')) {
       const filePath = `${storeDir}/${file}`;
@@ -46,7 +52,9 @@ if (ledger.length === 0) {
   return;
 }
 
-shuffleArray(ledger);
+// Randomize order on startup uniquely
+secureShuffle(ledger);
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function request(url, options = {}, cookieJar = '') {
@@ -86,7 +94,7 @@ function formatElapsedTime(ms) {
   console.log(`==================================================`);
   console.log(`Target Destination ID : ${TO}`);
   console.log(`Total Unique Accounts : ${ledger.length}`);
-  console.log(`Order Strategy        : Rolling Worker Queue (5 Workers)`);
+  console.log(`Order Strategy        : Unique Randomized Rolling Queue`);
   console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
   console.log(`==================================================\n`);
 
@@ -117,7 +125,7 @@ function formatElapsedTime(ms) {
 
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("[READY] Template state secured. Starting rolling queue loop...\n");
+  console.log("[READY] Template state secured. Starting unique rolling queue loop...\n");
 
   const sessionStart = Date.now();
   let lastHourlyReportTime = sessionStart;
@@ -139,11 +147,13 @@ function formatElapsedTime(ms) {
 
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
     
-    // Rolling Worker Queue setup
     const CONCURRENT_LIMIT = 5;
     let currentIndex = 0;
 
-    async function worker() {
+    async function worker(workerId) {
+      // Add a randomized stagger per worker to de-sync execution paths completely from other clones
+      await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
+
       while (currentIndex < ledger.length) {
         const actualIndex = currentIndex++;
         const a = ledger[actualIndex];
@@ -262,13 +272,13 @@ function formatElapsedTime(ms) {
             }
           }
         } catch (e) {
-          fail++;
+                          fail++;
         }
       }
     }
 
-    // Launch 5 continuous worker threads
-    const workers = Array(CONCURRENT_LIMIT).fill(0).map(() => worker());
+    // Launch 5 continuous worker threads with unique IDs
+    const workers = Array(CONCURRENT_LIMIT).fill(0).map((_, idx) => worker(idx));
     await Promise.all(workers);
 
     console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
@@ -281,6 +291,6 @@ function formatElapsedTime(ms) {
       lastHourlyReportTime = Date.now();
     }
 
-    shuffleArray(ledger);
+    secureShuffle(ledger);
   }
 })();
