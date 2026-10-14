@@ -2,13 +2,10 @@ const fs = require('fs');
 
 const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
-// Strictly load from environment variable / secret
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
-
-// Target duration in hours (e.g. 5.5 for GitHub Actions). Default is infinite (0) if unset.
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
 
 const storeDir = './store';
@@ -16,7 +13,6 @@ if (!fs.existsSync(storeDir)) {
   fs.mkdirSync(storeDir);
 }
 
-// Fisher-Yates shuffle helper to randomize array order
 function shuffleArray(array) {
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -25,9 +21,7 @@ function shuffleArray(array) {
   return array;
 }
 
-// Automatically scan and load all account files starting with "accs"
 let ledger = [];
-
 try {
   const files = fs.readdirSync(storeDir);
   for (const file of files) {
@@ -52,9 +46,7 @@ if (ledger.length === 0) {
   return;
 }
 
-// Randomize order on startup
 shuffleArray(ledger);
-
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function request(url, options = {}, cookieJar = '') {
@@ -78,9 +70,7 @@ async function sendDiscordAlert(message) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content: message })
     });
-  } catch (e) {
-    // Ignore network blips so it doesn't interrupt the bot
-  }
+  } catch (e) {}
 }
 
 function formatElapsedTime(ms) {
@@ -96,13 +86,12 @@ function formatElapsedTime(ms) {
   console.log(`==================================================`);
   console.log(`Target Destination ID : ${TO}`);
   console.log(`Total Unique Accounts : ${ledger.length}`);
-  console.log(`Order Strategy        : Randomized Concurrent (Safe 5x)`);
+  console.log(`Order Strategy        : Rolling Worker Queue (5 Workers)`);
   console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
   console.log(`==================================================\n`);
 
   await sendDiscordAlert(`🚀 **Lagos Bot Runner Started!**\nTarget ID: \`${TO}\`\nLoaded Accounts: **${ledger.length}**`);
 
-  // --- LOGIN WITH TEMPLATE TO GET BASE GAME STATE ---
   let cookieJar = '';
   const loginRes = await request(`${API}/auth/login`, {
     method: "POST",
@@ -128,7 +117,7 @@ function formatElapsedTime(ms) {
 
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("[READY] Template state secured. Starting high-speed concurrent loop...\n");
+  console.log("[READY] Template state secured. Starting rolling queue loop...\n");
 
   const sessionStart = Date.now();
   let lastHourlyReportTime = sessionStart;
@@ -149,15 +138,15 @@ function formatElapsedTime(ms) {
     console.log(`\n--- STARTING DRAIN CYCLE #${globalCycles} (Elapsed: ${formatElapsedTime(elapsedMs)}) ---`);
 
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
-
-    // Process accounts in safe parallel chunks of 5
+    
+    // Rolling Worker Queue setup
     const CONCURRENT_LIMIT = 5;
+    let currentIndex = 0;
 
-    for (let i = 0; i < ledger.length; i += CONCURRENT_LIMIT) {
-      const chunk = ledger.slice(i, i + CONCURRENT_LIMIT);
-
-      await Promise.all(chunk.map(async (a, indexWithinChunk) => {
-        const actualIndex = i + indexWithinChunk;
+    async function worker() {
+      while (currentIndex < ledger.length) {
+        const actualIndex = currentIndex++;
+        const a = ledger[actualIndex];
         const progressTag = `[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}]`;
 
         try {
@@ -170,7 +159,7 @@ function formatElapsedTime(ms) {
 
           if (!lr.res.ok) {
             fail++;
-            return;
+            continue;
           }
           accCookie = lr.newCookies;
 
@@ -184,7 +173,7 @@ function formatElapsedTime(ms) {
 
             if (!oid || me?.user?.username !== a.u) {
               fail++;
-              return;
+              continue;
             }
 
             const g = JSON.parse(JSON.stringify(clean));
@@ -205,13 +194,13 @@ function formatElapsedTime(ms) {
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
               fail++;
-              return;
+              continue;
             }
           }
 
           if (!sv?.game) {
             fail++;
-            return;
+            continue;
           }
 
           if (Number(sv.game.money) < MIN + FEE) {
@@ -230,14 +219,14 @@ function formatElapsedTime(ms) {
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
               broke++;
-              return;
+              continue;
             }
           }
 
           let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
           if (amount < MIN) {
             broke++;
-            return;
+            continue;
           }
 
           let ok = false;
@@ -272,12 +261,15 @@ function formatElapsedTime(ms) {
               break;
             }
           }
-          await sleep(10);
         } catch (e) {
           fail++;
         }
-      }));
+      }
     }
+
+    // Launch 5 continuous worker threads
+    const workers = Array(CONCURRENT_LIMIT).fill(0).map(() => worker());
+    await Promise.all(workers);
 
     console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
     console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
