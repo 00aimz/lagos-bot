@@ -60,14 +60,26 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function request(url, options = {}, cookieJar = '') {
   options.headers = options.headers || {};
   if (cookieJar) options.headers['cookie'] = cookieJar;
-  const res = await fetch(url, options);
-  const setCookie = res.headers.get('set-cookie');
-  let newCookies = cookieJar;
-  if (setCookie) {
-    const cookies = setCookie.split(',').map(c => c.split(';')[0]).join('; ');
-    newCookies = cookieJar ? `${cookieJar}; ${cookies}` : cookies;
+  
+  // Add 5-second AbortController timeout to prevent hanging requests
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  options.signal = controller.signal;
+
+  try {
+    const res = await fetch(url, options);
+    clearTimeout(timeoutId);
+    const setCookie = res.headers.get('set-cookie');
+    let newCookies = cookieJar;
+    if (setCookie) {
+      const cookies = setCookie.split(',').map(c => c.split(';')[0]).join('; ');
+      newCookies = cookieJar ? `${cookieJar}; ${cookies}` : cookies;
+    }
+    return { res, newCookies };
+  } catch (e) {
+    clearTimeout(timeoutId);
+    return { res: { ok: false, text: async () => e.message }, newCookies: cookieJar };
   }
-  return { res, newCookies };
 }
 
 async function sendDiscordAlert(message) {
@@ -94,7 +106,7 @@ function formatElapsedTime(ms) {
   console.log(`==================================================`);
   console.log(`Target Destination ID : ${TO}`);
   console.log(`Total Unique Accounts : ${ledger.length}`);
-  console.log(`Order Strategy        : Unique Randomized Rolling Queue (Regulated)`);
+  console.log(`Order Strategy        : Unique Randomized Rolling Queue (Timeout Protected)`);
   console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
   console.log(`==================================================\n`);
 
@@ -125,7 +137,7 @@ function formatElapsedTime(ms) {
 
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("[READY] Template state secured. Starting regulated rolling queue loop...\n");
+  console.log("[READY] Template state secured. Starting timeout-protected rolling queue loop...\n");
 
   const sessionStart = Date.now();
   let lastHourlyReportTime = sessionStart;
@@ -199,7 +211,7 @@ function formatElapsedTime(ms) {
 
             if (br.res.ok) {
               booted++;
-              await sleep(25);
+              await sleep(15);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
@@ -224,7 +236,7 @@ function formatElapsedTime(ms) {
 
             if (rr.res.ok) {
               repaired++;
-              await sleep(25);
+              await sleep(15);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
@@ -256,15 +268,15 @@ function formatElapsedTime(ms) {
               const logMsg = `${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
               console.log(logMsg);
             } else {
-              const err = await sr.res.text();
-              if (err.includes("try again")) {
-                await sleep(200 + Math.floor(Math.random() * 200));
+              const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
+              if (errText.includes("try again")) {
+                await sleep(100 + Math.floor(Math.random() * 100));
                 continue;
               }
-              const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
+              const have = Number((errText.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
               if (have) {
                 amount = have - FEE;
-                await sleep(100);
+                await sleep(50);
                 continue;
               }
               fail++;
@@ -272,8 +284,8 @@ function formatElapsedTime(ms) {
             }
           }
           
-          // Smooth throughput regulator: Paces worker requests to prevent server socket crowding
-          await sleep(25 + Math.floor(Math.random() * 25));
+          // Ultra-fast micro-pacing to maintain fluid socket throughput
+          await sleep(10 + Math.floor(Math.random() * 15));
         } catch (e) {
           fail++;
         }
