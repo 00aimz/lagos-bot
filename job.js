@@ -27,7 +27,6 @@ function shuffleArray(array) {
 
 // Automatically scan and load all account files starting with "accs"
 let ledger = [];
-const ledgerPath = './store/accs.json';
 
 try {
   const files = fs.readdirSync(storeDir);
@@ -97,7 +96,7 @@ function formatElapsedTime(ms) {
   console.log(`==================================================`);
   console.log(`Target Destination ID : ${TO}`);
   console.log(`Total Unique Accounts : ${ledger.length}`);
-  console.log(`Order Strategy        : Randomized Concurrent (5x Speed)`);
+  console.log(`Order Strategy        : Randomized Concurrent (Safe 5x)`);
   console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
   console.log(`==================================================\n`);
 
@@ -151,8 +150,8 @@ function formatElapsedTime(ms) {
 
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
 
-    // Process accounts in parallel chunks of 5 to boost speed safely
-    const CONCURRENT_LIMIT = 15;
+    // Process accounts in safe parallel chunks of 5
+    const CONCURRENT_LIMIT = 5;
 
     for (let i = 0; i < ledger.length; i += CONCURRENT_LIMIT) {
       const chunk = ledger.slice(i, i + CONCURRENT_LIMIT);
@@ -201,7 +200,7 @@ function formatElapsedTime(ms) {
 
             if (br.res.ok) {
               booted++;
-              await sleep(100);
+              await sleep(50);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
@@ -226,7 +225,7 @@ function formatElapsedTime(ms) {
 
             if (rr.res.ok) {
               repaired++;
-              await sleep(100);
+              await sleep(50);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
@@ -260,27 +259,24 @@ function formatElapsedTime(ms) {
             } else {
               const err = await sr.res.text();
               if (err.includes("try again")) {
-                await sleep(2000);
+                await sleep(1000);
                 continue;
               }
               const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
               if (have) {
                 amount = have - FEE;
-                await sleep(500);
+                await sleep(200);
                 continue;
               }
               fail++;
               break;
             }
           }
-          await sleep(20);
+          await sleep(10);
         } catch (e) {
           fail++;
         }
       }));
-
-      // Save progress periodically after each chunk
-      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
     }
 
     console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
