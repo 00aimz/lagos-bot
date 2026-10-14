@@ -94,7 +94,7 @@ function formatElapsedTime(ms) {
   console.log(`==================================================`);
   console.log(`Target Destination ID : ${TO}`);
   console.log(`Total Unique Accounts : ${ledger.length}`);
-  console.log(`Order Strategy        : Unique Randomized Rolling Queue`);
+  console.log(`Order Strategy        : Unique Randomized Rolling Queue (Regulated)`);
   console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
   console.log(`==================================================\n`);
 
@@ -125,7 +125,7 @@ function formatElapsedTime(ms) {
 
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("[READY] Template state secured. Starting unique rolling queue loop...\n");
+  console.log("[READY] Template state secured. Starting regulated rolling queue loop...\n");
 
   const sessionStart = Date.now();
   let lastHourlyReportTime = sessionStart;
@@ -258,7 +258,6 @@ function formatElapsedTime(ms) {
             } else {
               const err = await sr.res.text();
               if (err.includes("try again")) {
-                // Fixed: Fast jitter retry instead of long blocking 1000ms pause
                 await sleep(200 + Math.floor(Math.random() * 200));
                 continue;
               }
@@ -272,8 +271,9 @@ function formatElapsedTime(ms) {
               break;
             }
           }
-          // Small yield to keep socket connections fluid and fast
-          await sleep(10);
+          
+          // Smooth throughput regulator: Paces worker requests to prevent server socket crowding
+          await sleep(25 + Math.floor(Math.random() * 25));
         } catch (e) {
           fail++;
         }
