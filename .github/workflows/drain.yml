@@ -23,5 +23,5 @@ jobs:
         env:
           TO: ${{ secrets.TO_DESTINATION_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DURATION_HOURS: "24" # Safe duration under GitHub's 6h max execution cap
+          DURATION_HOURS: "5.5" # Safe duration under GitHub's 6h max execution cap
         run: node job.js
