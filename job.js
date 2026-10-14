@@ -147,7 +147,7 @@ function formatElapsedTime(ms) {
 
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
     
-    const CONCURRENT_LIMIT = 5;
+    const CONCURRENT_LIMIT = 15;
     let currentIndex = 0;
 
     async function worker(workerId) {
