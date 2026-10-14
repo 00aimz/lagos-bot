@@ -199,7 +199,7 @@ function formatElapsedTime(ms) {
 
             if (br.res.ok) {
               booted++;
-              await sleep(50);
+              await sleep(25);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
@@ -224,7 +224,7 @@ function formatElapsedTime(ms) {
 
             if (rr.res.ok) {
               repaired++;
-              await sleep(50);
+              await sleep(25);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
@@ -258,26 +258,29 @@ function formatElapsedTime(ms) {
             } else {
               const err = await sr.res.text();
               if (err.includes("try again")) {
-                await sleep(1000);
+                // Fixed: Fast jitter retry instead of long blocking 1000ms pause
+                await sleep(200 + Math.floor(Math.random() * 200));
                 continue;
               }
               const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
               if (have) {
                 amount = have - FEE;
-                await sleep(200);
+                await sleep(100);
                 continue;
               }
               fail++;
               break;
             }
           }
+          // Small yield to keep socket connections fluid and fast
+          await sleep(10);
         } catch (e) {
-                          fail++;
+          fail++;
         }
       }
     }
 
-    // Launch 5 continuous worker threads with unique IDs
+    // Launch active continuous worker threads matching CONCURRENT_LIMIT
     const workers = Array(CONCURRENT_LIMIT).fill(0).map((_, idx) => worker(idx));
     await Promise.all(workers);
 
