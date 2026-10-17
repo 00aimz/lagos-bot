@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 15; // Lowered slightly for better diagnostic visibility
+const CONCURRENT_LIMIT = 10; // Slightly lowered to prevent flooding the server network layer
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -39,20 +39,30 @@ if (!ledger.length) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function request(url, options = {}, cookieJar = '') {
+// Robust request wrapper with built-in network retry
+async function request(url, options = {}, cookieJar = '', retries = 3) {
   options.headers = options.headers || {};
   if (cookieJar) options.headers['cookie'] = cookieJar;
 
-  const res = await fetch(url, { ...options, signal: AbortSignal.timeout(5000) }).catch(e => ({ ok: false, statusText: e.message }));
-  if (!res.ok && !res.headers) return { res: { ok: false, text: async () => res.statusText }, newCookies: cookieJar };
-
-  const setCookie = res.headers.get('set-cookie');
-  let newCookies = cookieJar;
-  if (setCookie) {
-    const c = setCookie.split(',')[0].split(';')[0];
-    newCookies = cookieJar ? `${cookieJar};${c}` : c;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, { ...options, signal: AbortSignal.timeout(6000) });
+      
+      const setCookie = res.headers.get('set-cookie');
+      let newCookies = cookieJar;
+      if (setCookie) {
+        const c = setCookie.split(',')[0].split(';')[0];
+        newCookies = cookieJar ? `${cookieJar};${c}` : c;
+      }
+      return { res, newCookies };
+    } catch (e) {
+      if (attempt === retries) {
+        return { res: { ok: false, statusText: e.message }, newCookies: cookieJar };
+      }
+      // Wait before retrying network drop
+      await sleep(300 * attempt);
+    }
   }
-  return { res, newCookies };
 }
 
 async function sendDiscordAlert(message) {
@@ -87,7 +97,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution...\n`);
+  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with network damping...\n`);
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -99,7 +109,8 @@ async function sendDiscordAlert(message) {
     let currentIndex = 0;
 
     async function worker(workerId) {
-      await sleep(Math.floor(Math.random() * 200) + (workerId * 30));
+      // Stagger initial worker startup to prevent slamming the server all at once
+      await sleep(Math.floor(Math.random() * 500) + (workerId * 150));
 
       while (currentIndex < ledger.length) {
         const actualIndex = currentIndex++;
@@ -114,9 +125,7 @@ async function sendDiscordAlert(message) {
           });
           
           if (!lr.res.ok) {
-            // Diagnostic print for failed logins
-            console.log(`[DEBUG FAIL] User ${a.u} login failed (Status: ${lr.res.status || 'Network Error'})`);
-            continue;
+            continue; // Skip silently if network or login fails after retries
           }
 
           let accCookie = lr.newCookies;
@@ -136,7 +145,7 @@ async function sendDiscordAlert(message) {
             }, accCookie);
 
             if (br.res.ok) {
-              await sleep(15);
+              await sleep(50);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else continue;
@@ -156,26 +165,26 @@ async function sendDiscordAlert(message) {
 
             if (sr.res.ok) {
               sessionTotalSent += amount;
-              console.log(`[SUCCESS] ${a.u} -> Sent ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
+              console.log(`[C${globalCycles}|${actualIndex + 1}/${ledger.length}] ${a.u} -> ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
               break;
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
               if (errText.includes("try again")) {
-                await sleep(80 + Math.floor(Math.random() * 80));
+                await sleep(150 + Math.floor(Math.random() * 100));
                 continue;
               }
               break;
             }
           }
 
-          await sleep(10 + Math.floor(Math.random() * 15));
-        } catch (e) {
-          console.log(`[EXCEPTION] Worker error on ${a.u}:`, e.message);
-        }
+          // Gentle pacing between accounts to survive peak load
+          await sleep(30 + Math.floor(Math.random() * 30));
+        } catch (e) {}
       }
     }
 
     await Promise.all(Array.from({ length: CONCURRENT_LIMIT }, (_, idx) => worker(idx)));
-    break; // Run once for diagnostics or remove break to loop
+    secureShuffle(ledger);
+    await sleep(1000);
   }
 })();
