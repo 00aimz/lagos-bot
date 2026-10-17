@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25; // Boosted back to 25 for maximum throughput
+const CONCURRENT_LIMIT = 25;
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -87,7 +87,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("[READY] Fast drain engine online (Stale-Save Bypassed & Optimized).\n");
+  console.log("[READY] Fast drain engine online (Auto-Correct Stale Handler Active).\n");
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -126,7 +126,6 @@ async function sendDiscordAlert(message) {
             const baseGame = sv?.game ? sv.game : clean;
             const g = { ...baseGame, sim: { ...baseGame.sim, name: a.u }, owner: me.user.id, money: SEED };
             
-            // FIXED: Using replace: 1 to prevent stale errors on boot
             const br = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
@@ -138,8 +137,6 @@ async function sendDiscordAlert(message) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
-              const failText = typeof br.res.text === 'function' ? await br.res.text() : br.res.statusText;
-              console.log(`[DEBUG FAIL] Boot save failed for ${a.u}: ${failText}`);
               continue;
             }
           }
@@ -147,22 +144,32 @@ async function sendDiscordAlert(message) {
           if (!sv?.game) continue;
 
           if (Number(sv.game.money) < MIN + FEE) {
-            const g = { ...sv.game, money: SEED };
+            let g = { ...sv.game, money: SEED };
             
-            // FIXED: Removed old base timestamp and added fresh: true, replace: 1 to bypass stale errors
-            const rr = await request(`${API}/save`, {
+            let rr = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({ game: g, fresh: true, replace: 1 })
             }, accCookie);
+
+            // AUTO-CORRECT: If server returns stale error with the newer game state, use it and retry immediately!
+            if (!rr.res.ok) {
+              const errBody = await rr.res.json().catch(() => null);
+              if (errBody?.game) {
+                g = { ...errBody.game, money: SEED };
+                rr = await request(`${API}/save`, {
+                  method: "PUT",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ game: g, fresh: true, replace: 1 })
+                }, accCookie);
+              }
+            }
 
             if (rr.res.ok) {
               await sleep(15);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
-              const failText = typeof rr.res.text === 'function' ? await rr.res.text() : rr.res.statusText;
-              console.log(`[DEBUG FAIL] Repair save failed for ${a.u}: ${failText}`);
               continue;
             }
           }
@@ -189,7 +196,6 @@ async function sendDiscordAlert(message) {
               break;
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
-              console.log(`[DEBUG FAIL] Send failed for ${a.u}: ${errText}`);
               if (errText.includes("try again")) {
                 await sleep(100 + Math.floor(Math.random() * 100));
                 continue;
