@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25; // High throughput concurrency
+const CONCURRENT_LIMIT = 25;
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) {
@@ -155,7 +155,6 @@ function formatElapsedTime(ms) {
 
         const progressTag = `[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}]`;
 
-        // Live progress indicator every 50 accounts so you can see it scanning
         if (actualIndex % 50 === 0) {
           console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
         }
@@ -223,7 +222,7 @@ function formatElapsedTime(ms) {
             const rr = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now, replace: 1 })
+              body: JSON.stringify({ game: g, fresh: true, replace: 1 })
             }, accCookie);
 
             if (rr.res.ok) {
