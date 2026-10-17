@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25; // Balanced concurrency to keep network stable under heavy load
+const CONCURRENT_LIMIT = 25; // Balanced concurrency for high throughput
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -39,7 +39,6 @@ if (!ledger.length) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Robust request wrapper with built-in network retry
 async function request(url, options = {}, cookieJar = '', retries = 3) {
   options.headers = options.headers || {};
   if (cookieJar) options.headers['cookie'] = cookieJar;
@@ -98,7 +97,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with live progress tracking...\n`);
+  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with low-balance seeding...\n`);
   sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
@@ -111,7 +110,6 @@ async function sendDiscordAlert(message) {
     let currentIndex = 0;
 
     async function worker(workerId) {
-      // Stagger worker startup to avoid slamming the server network layer simultaneously
       await sleep(Math.floor(Math.random() * 500) + (workerId * 150));
 
       while (currentIndex < ledger.length) {
@@ -119,7 +117,6 @@ async function sendDiscordAlert(message) {
         const a = ledger[actualIndex];
         if (!a) break;
 
-        // Live progress counter prints every 50 accounts so you can track movement
         if (actualIndex % 50 === 0) {
           console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
         }
@@ -137,7 +134,9 @@ async function sendDiscordAlert(message) {
           const svReq = await request(`${API}/save`, {}, accCookie);
           let sv = svReq.res.ok ? await svReq.res.json() : null;
 
-          if (!sv?.game) {
+          // FIXED: Now catches missing game states OR low-balance accounts and seeds them
+          const currentMoney = Number(sv?.game?.money ?? 0);
+          if (!sv?.game || currentMoney < MIN + FEE) {
             const meReq = await request(`${API}/auth/me`, {}, accCookie);
             const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
             if (!me?.user?.id) continue;
@@ -182,7 +181,7 @@ async function sendDiscordAlert(message) {
             }
           }
 
-          await sleep(30 + Math.floor(Math.random() * 30));
+          await sleep(20 + Math.floor(Math.random() * 20));
         } catch (e) {}
       }
     }
