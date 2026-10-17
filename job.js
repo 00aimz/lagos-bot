@@ -7,15 +7,14 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
+const CONCURRENT_LIMIT = 25; // High throughput concurrency
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) {
   fs.mkdirSync(storeDir);
 }
 
-// Advanced robust shuffle using crypto-based randomness if available, mixed with unique salts
 function secureShuffle(array) {
-  // Add a micro-shift based on current execution time ticks to ensure unique order per clone/runner
   const salt = Date.now() % 1000;
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor((Math.random() * (i + 1) + salt) % (i + 1));
@@ -26,8 +25,7 @@ function secureShuffle(array) {
 
 let ledger = [];
 try {
-  const files = fs.readdirSync(storeDir).sort(); // Sort files so order parsing can be varied
-  // Shuffle the file read sequence itself so clones don't load files in the exact same sequence
+  const files = fs.readdirSync(storeDir).sort();
   secureShuffle(files);
 
   for (const file of files) {
@@ -52,7 +50,6 @@ if (ledger.length === 0) {
   return;
 }
 
-// Randomize order on startup uniquely
 secureShuffle(ledger);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -125,7 +122,7 @@ function formatElapsedTime(ms) {
 
   clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("[READY] Template state secured. Starting unique rolling queue loop...\n");
+  console.log("[READY] Template state secured. Starting high-speed scanning and draining loop...\n");
 
   const sessionStart = Date.now();
   let lastHourlyReportTime = sessionStart;
@@ -146,18 +143,22 @@ function formatElapsedTime(ms) {
     console.log(`\n--- STARTING DRAIN CYCLE #${globalCycles} (Elapsed: ${formatElapsedTime(elapsedMs)}) ---`);
 
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
-    
-    const CONCURRENT_LIMIT = 5;
     let currentIndex = 0;
 
     async function worker(workerId) {
-      // Add a randomized stagger per worker to de-sync execution paths completely from other clones
       await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
 
       while (currentIndex < ledger.length) {
         const actualIndex = currentIndex++;
         const a = ledger[actualIndex];
+        if (!a) break;
+
         const progressTag = `[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}]`;
+
+        // Live progress indicator every 50 accounts so you can see it scanning
+        if (actualIndex % 50 === 0) {
+          console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
+        }
 
         try {
           let accCookie = '';
@@ -186,7 +187,8 @@ function formatElapsedTime(ms) {
               continue;
             }
 
-            const g = JSON.parse(JSON.stringify(clean));
+            const baseGame = sv?.game ? sv.game : clean;
+            const g = JSON.parse(JSON.stringify(baseGame));
             g.sim.name = a.u;
             g.owner = oid;
             g.money = SEED;
@@ -194,7 +196,7 @@ function formatElapsedTime(ms) {
             const br = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 0 })
+              body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 1 })
             }, accCookie);
 
             if (br.res.ok) {
@@ -203,6 +205,8 @@ function formatElapsedTime(ms) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
+              const failText = typeof br.res.text === 'function' ? await br.res.text() : br.res.statusText;
+              console.log(`[DEBUG FAIL] Boot save failed for ${a.u}: ${failText}`);
               fail++;
               continue;
             }
@@ -219,7 +223,7 @@ function formatElapsedTime(ms) {
             const rr = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
+              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now, replace: 1 })
             }, accCookie);
 
             if (rr.res.ok) {
@@ -228,6 +232,8 @@ function formatElapsedTime(ms) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
+              const failText = typeof rr.res.text === 'function' ? await rr.res.text() : rr.res.statusText;
+              console.log(`[DEBUG FAIL] Repair save failed for ${a.u}: ${failText}`);
               broke++;
               continue;
             }
@@ -253,10 +259,12 @@ function formatElapsedTime(ms) {
               sessionTotalSent += amount;
               drained++;
 
-              const logMsg = `${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
+              const logMsg = `[SUCCESS] ${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
               console.log(logMsg);
+              await sendDiscordAlert(`✅ Sent ₦${amount.toLocaleString()} from ${a.u}`);
             } else {
               const err = await sr.res.text();
+              console.log(`[DEBUG FAIL] Send failed for ${a.u}: ${err}`);
               if (err.includes("try again")) {
                 await sleep(1000);
                 continue;
@@ -272,12 +280,12 @@ function formatElapsedTime(ms) {
             }
           }
         } catch (e) {
-                          fail++;
+          console.log(`[ERROR] Worker ${workerId} exception on ${a.u}:`, e.message);
+          fail++;
         }
       }
     }
 
-    // Launch 5 continuous worker threads with unique IDs
     const workers = Array(CONCURRENT_LIMIT).fill(0).map((_, idx) => worker(idx));
     await Promise.all(workers);
 
