@@ -87,7 +87,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("[READY] Drain engine online using browser-matched logic with full console error tracing.\n");
+  console.log("[READY] Drain engine online with Auto-Correct Stale Repair Handler.\n");
   sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
@@ -181,13 +181,31 @@ async function sendDiscordAlert(message) {
           }
 
           if (Number(sv.game.money) < MIN + FEE) {
-            const g = JSON.parse(JSON.stringify(sv.game));
+            let g = JSON.parse(JSON.stringify(sv.game));
             g.money = SEED;
-            const rr = await request(`${API}/save`, {
+            
+            let rr = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
             }, accCookie);
+
+            // AUTO-CORRECT STALE REPAIR: If server returns stale error containing the newer game state, extract and retry instantly!
+            if (!rr.res.ok) {
+              const errText = typeof rr.res.text === 'function' ? await rr.res.text() : '';
+              try {
+                const errBody = JSON.parse(errText);
+                if (errBody?.game) {
+                  g = JSON.parse(JSON.stringify(errBody.game));
+                  g.money = SEED;
+                  rr = await request(`${API}/save`, {
+                    method: "PUT",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ game: g, base: errBody.game.updatedAt ?? errBody.game.now ?? sv.updatedAt ?? sv.now })
+                  }, accCookie);
+                }
+              } catch (e) {}
+            }
 
             if (rr.res.ok) {
               repaired++;
