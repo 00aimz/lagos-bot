@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25; // Balanced concurrency for high throughput
+const CONCURRENT_LIMIT = 15; // Lowered slightly from 25 to prevent server rate-limiting
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -97,7 +97,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with low-balance seeding...\n`);
+  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with error diagnostics...\n`);
   sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
@@ -134,7 +134,6 @@ async function sendDiscordAlert(message) {
           const svReq = await request(`${API}/save`, {}, accCookie);
           let sv = svReq.res.ok ? await svReq.res.json() : null;
 
-          // FIXED: Now catches missing game states OR low-balance accounts and seeds them
           const currentMoney = Number(sv?.game?.money ?? 0);
           if (!sv?.game || currentMoney < MIN + FEE) {
             const meReq = await request(`${API}/auth/me`, {}, accCookie);
@@ -152,7 +151,12 @@ async function sendDiscordAlert(message) {
               await sleep(50);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
-            } else continue;
+            } else {
+              // Log why the seed save failed
+              const failText = typeof br.res.text === 'function' ? await br.res.text() : br.res.statusText;
+              console.log(`[DEBUG FAIL] Seed save failed for ${a.u}: ${failText}`);
+              continue;
+            }
           }
 
           if (!sv?.game) continue;
@@ -170,9 +174,11 @@ async function sendDiscordAlert(message) {
             if (sr.res.ok) {
               sessionTotalSent += amount;
               console.log(`[SUCCESS] Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length} | ${a.u} -> Sent ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
+              sendDiscordAlert(`✅ Sent ₦${amount.toLocaleString()} from ${a.u}`);
               break;
             } else {
-              const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
+              const errText = typeof sr.res.text === 'function' ? await sr.res.text() : sr.res.statusText;
+              console.log(`[DEBUG FAIL] Send failed for ${a.u}: ${errText}`);
               if (errText.includes("try again")) {
                 await sleep(150 + Math.floor(Math.random() * 100));
                 continue;
@@ -182,7 +188,9 @@ async function sendDiscordAlert(message) {
           }
 
           await sleep(20 + Math.floor(Math.random() * 20));
-        } catch (e) {}
+        } catch (e) {
+          console.log(`[ERROR] Worker ${workerId} exception on ${a.u}:`, e.message);
+        }
       }
     }
 
