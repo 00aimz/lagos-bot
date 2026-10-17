@@ -4,10 +4,10 @@ const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-const FEE = 50, MIN = 100, SEED = 1095950;
+const FEE = 50, MIN = 100, SEED = 1096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25;
+const CONCURRENT_LIMIT = 15;
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -23,16 +23,10 @@ function secureShuffle(array) {
 
 let ledger = [];
 try {
-  const files = fs.readdirSync(storeDir).sort();
-  secureShuffle(files);
+  const files = fs.readdirSync(storeDir).filter(f => f.startsWith('accs'));
   for (const file of files) {
-    if (file.startsWith('accs')) {
-      const rawData = fs.readFileSync(`${storeDir}/${file}`, 'utf8');
-      if (rawData.trim()) {
-        const parsed = JSON.parse(rawData);
-        if (Array.isArray(parsed)) ledger.push(...parsed);
-      }
-    }
+    const rawData = fs.readFileSync(`${storeDir}/${file}`, 'utf8');
+    if (rawData.trim()) ledger.push(...JSON.parse(rawData));
   }
 } catch (e) {
   console.log("[INIT] Error:", e.message);
@@ -43,33 +37,36 @@ if (!ledger.length) {
   return;
 }
 
-secureShuffle(ledger);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function request(url, options = {}, cookieJar = '') {
   options.headers = options.headers || {};
   if (cookieJar) options.headers['cookie'] = cookieJar;
-  const res = await fetch(url, options);
+
+  const res = await fetch(url, { ...options, signal: AbortSignal.timeout(5000) }).catch(e => ({ ok: false, statusText: e.message }));
+  if (!res.ok && !res.headers) return { res: { ok: false, text: async () => res.statusText }, newCookies: cookieJar };
+
   const setCookie = res.headers.get('set-cookie');
   let newCookies = cookieJar;
   if (setCookie) {
-    const cookies = setCookie.split(',').map(c => c.split(';')[0]).join('; ');
-    newCookies = cookieJar ? `${cookieJar}; ${cookies}` : cookies;
+    const c = setCookie.split(',')[0].split(';')[0];
+    newCookies = cookieJar ? `${cookieJar};${c}` : c;
   }
   return { res, newCookies };
 }
 
-async function sendDiscordAlert(msg) {
+async function sendDiscordAlert(message) {
   if (!DISCORD_WEBHOOK_URL) return;
   fetch(DISCORD_WEBHOOK_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: msg })
+    body: JSON.stringify({ content: message })
   }).catch(() => {});
 }
 
 (async () => {
-  let cookieJar = '';
+  secureShuffle(ledger);
+
   const loginRes = await request(`${API}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -80,9 +77,8 @@ async function sendDiscordAlert(msg) {
     console.log("[ERROR] Template login failed");
     return;
   }
-  cookieJar = loginRes.newCookies;
 
-  const getSaveReq = await request(`${API}/save`, {}, cookieJar);
+  const getSaveReq = await request(`${API}/save`, {}, loginRes.newCookies);
   const saveJson = getSaveReq.res.ok ? await getSaveReq.res.json() : null;
   let clean = saveJson?.game;
   if (!clean) {
@@ -90,39 +86,49 @@ async function sendDiscordAlert(msg) {
     return;
   }
 
-  clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log("[READY] Template loaded. Starting sweep with", ledger.length, "accounts...");
-  sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts.`);
+  console.log("Template ready — drain armed,", ledger.length, "accounts");
+  sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
 
   while (true) {
     if (TARGET_HOURS > 0 && (Date.now() - sessionStart) >= TARGET_HOURS * 3600000) break;
+
     globalCycles++;
     let currentIndex = 0, cycleTotal = 0;
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0;
 
     async function worker(workerId) {
       await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
+
       while (currentIndex < ledger.length) {
         const actualIndex = currentIndex++;
         const a = ledger[actualIndex];
         if (!a) break;
 
         try {
-          let accCookie = '';
-          const lr = await request(`${API}/auth/login`, {
+          let lr = await request(`${API}/auth/login`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ username: a.u, password: a.p })
           });
           if (!lr.res.ok) { fail++; continue; }
-          accCookie = lr.newCookies;
 
-          const svReq = await request(`${API}/save`, {}, accCookie);
-          let sv = svReq.res.ok ? await svReq.res.json() : null;
+          let accCookie = lr.newCookies;
+          const getSave = async () => {
+            const r = await request(`${API}/save`, {}, accCookie);
+            return r.res.ok ? r.res.json() : null;
+          };
+
+          const putSave = (game, base) => request(`${API}/save`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ game, base })
+          }, accCookie);
+
+          let sv = await getSave();
 
           if (!sv?.game) {
             const meReq = await request(`${API}/auth/me`, {}, accCookie);
@@ -143,12 +149,17 @@ async function sendDiscordAlert(msg) {
 
             if (br.res.ok) {
               booted++;
-              await sleep(50);
-              const svRetry = await request(`${API}/save`, {}, accCookie);
-              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+              await sleep(150);
+              sv = await getSave();
             } else {
-              fail++;
-              continue;
+              const err = typeof br.res.text === 'function' ? await br.res.text() : '';
+              if (err.includes("stale")) {
+                sv = await getSave();
+                if (!sv?.game) { fail++; continue; }
+              } else {
+                fail++;
+                continue;
+              }
             }
           }
 
@@ -157,22 +168,32 @@ async function sendDiscordAlert(msg) {
           if (Number(sv.game.money) < MIN + FEE) {
             const g = JSON.parse(JSON.stringify(sv.game));
             g.money = SEED;
-            const rr = await request(`${API}/save`, {
-              method: "PUT",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
-            }, accCookie);
+            let rr = await putSave(g, sv.updatedAt ?? sv.now);
+            
+            // Stale recovery for repair matching browser pattern
+            if (!rr.res.ok) {
+              const err = typeof rr.res.text === 'function' ? await rr.res.text() : '';
+              if (err.includes("stale")) {
+                sv = await getSave();
+                if (sv?.game) {
+                  const gRetry = JSON.parse(JSON.stringify(sv.game));
+                  gRetry.money = SEED;
+                  rr = await putSave(gRetry, sv.updatedAt ?? sv.now);
+                }
+              }
+            }
 
             if (rr.res.ok) {
               repaired++;
-              await sleep(50);
-              const svRetry = await request(`${API}/save`, {}, accCookie);
-              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+              await sleep(150);
+              sv = await getSave();
             } else {
               broke++;
               continue;
             }
           }
+
+          if (!sv?.game) { broke++; continue; }
 
           let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
           if (amount < MIN) { broke++; continue; }
@@ -190,25 +211,39 @@ async function sendDiscordAlert(msg) {
               cycleTotal += amount;
               sessionTotalSent += amount;
               drained++;
-              console.log(`[SUCCESS] ${a.u} -> Sent ₦${amount.toLocaleString()}`);
+              console.log(`[SUCCESS] [Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
+              sendDiscordAlert(`✅ Sent ₦${amount.toLocaleString()} from ${a.u}`);
             } else {
-              const err = await sr.res.text();
-              if (err.includes("try again")) { await sleep(1000); continue; }
+              const err = typeof sr.res.text === 'function' ? await sr.res.text() : '';
+              if (err.includes("try again")) {
+                await sleep(3000);
+                continue;
+              }
               const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
-              if (have) { amount = have - FEE; await sleep(200); continue; }
+              if (have) {
+                amount = have - FEE;
+                await sleep(800);
+                continue;
+              }
               fail++;
               break;
             }
           }
+
+          await sleep(50);
         } catch (e) {
           fail++;
         }
       }
     }
 
-    await Promise.all(Array(CONCURRENT_LIMIT).fill(0).map((_, idx) => worker(idx)));
+    await Promise.all(Array.from({ length: CONCURRENT_LIMIT }, (_, idx) => worker(idx)));
     secureShuffle(ledger);
-    console.log(`--- CYCLE #${globalCycles} COMPLETED ---`);
+
+    console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
+    console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
+    console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Total: ₦${sessionTotalSent.toLocaleString()}\n`);
+
     await sleep(500);
   }
 })();
