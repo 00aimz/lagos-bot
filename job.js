@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25; // Lowered slightly from 25 to prevent server rate-limiting
+const CONCURRENT_LIMIT = 25; // Back up to 25 for maximum throughput
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -97,7 +97,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with error diagnostics...\n`);
+  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with stale-save override fix...\n`);
   sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
@@ -140,11 +140,14 @@ async function sendDiscordAlert(message) {
             const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
             if (!me?.user?.id) continue;
 
-            const g = { ...clean, sim: { ...clean.sim, name: a.u }, owner: me.user.id, money: SEED };
+            // FIXED: Use the account's existing game state if it has one to prevent "stale" errors; otherwise use clean template
+            const baseGame = sv?.game ? sv.game : clean;
+            const g = { ...baseGame, sim: { ...baseGame.sim, name: a.u }, owner: me.user.id, money: SEED };
+            
             const br = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, owner: me.user.id, fresh: true, replace: 0 })
+              body: JSON.stringify({ game: g, owner: me.user.id, fresh: true, replace: 1 }) // replace: 1 forces overwrite
             }, accCookie);
 
             if (br.res.ok) {
@@ -152,7 +155,6 @@ async function sendDiscordAlert(message) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
-              // Log why the seed save failed
               const failText = typeof br.res.text === 'function' ? await br.res.text() : br.res.statusText;
               console.log(`[DEBUG FAIL] Seed save failed for ${a.u}: ${failText}`);
               continue;
