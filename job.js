@@ -78,7 +78,7 @@ async function request(url, options = {}, cookieJar = '') {
   }
 
   delete clean.owner;
-  console.log("[READY] Fast drain engine online (With Live Progress & Fixed Stale Handler).\n");
+  console.log("[READY] Fast drain engine online.\n");
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -128,9 +128,8 @@ async function request(url, options = {}, cookieJar = '') {
             }, accCookie);
 
             if (br.res.ok) {
-              await sleep(15);
-              const svRetry = await request(`${API}/save`, {}, accCookie);
-              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+              const resJson = await br.res.json().catch(() => null);
+              sv = { game: resJson?.game || g };
             } else {
               continue;
             }
@@ -138,35 +137,33 @@ async function request(url, options = {}, cookieJar = '') {
 
           if (!sv?.game) continue;
 
-          if (Number(sv.game.money) < MIN + FEE) {
-            let g = { ...sv.game, money: SEED };
-            
-            let rr = await request(`${API}/save`, {
-              method: "PUT",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, fresh: true, replace: 1 })
-            }, accCookie);
+          // Force money injection
+          let g = { ...sv.game, money: SEED };
+          
+          let rr = await request(`${API}/save`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ game: g, fresh: true, replace: 1 })
+          }, accCookie);
 
-            if (!rr.res.ok) {
-              const errBody = await rr.res.json().catch(() => null);
-              if (errBody?.game) {
-                sv.game = errBody.game;
-                g = { ...errBody.game, money: SEED };
-                rr = await request(`${API}/save`, {
-                  method: "PUT",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify({ game: g, fresh: true, replace: 1 })
-                }, accCookie);
-              }
+          if (!rr.res.ok) {
+            const errBody = await rr.res.json().catch(() => null);
+            if (errBody?.game) {
+              // Apply SEED money to the server's updated game object and save again
+              g = { ...errBody.game, money: SEED };
+              rr = await request(`${API}/save`, {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ game: g, fresh: true, replace: 1 })
+              }, accCookie);
             }
+          }
 
-            if (rr.res.ok) {
-              await sleep(15);
-              const svRetry = await request(`${API}/save`, {}, accCookie);
-              sv = svRetry.res.ok ? await svRetry.res.json() : null;
-            } else {
-              continue;
-            }
+          if (rr.res.ok) {
+            const resJson = await rr.res.json().catch(() => null);
+            sv = { game: resJson?.game || g };
+          } else {
+            continue;
           }
 
           let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
