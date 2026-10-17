@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 10; // Slightly lowered to prevent flooding the server network layer
+const CONCURRENT_LIMIT = 10; // Balanced concurrency to keep network stable under heavy load
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -59,7 +59,6 @@ async function request(url, options = {}, cookieJar = '', retries = 3) {
       if (attempt === retries) {
         return { res: { ok: false, statusText: e.message }, newCookies: cookieJar };
       }
-      // Wait before retrying network drop
       await sleep(300 * attempt);
     }
   }
@@ -85,6 +84,7 @@ async function sendDiscordAlert(message) {
 
   if (!loginRes.res.ok) {
     console.log("[ERROR] Template login failed");
+    sendDiscordAlert("[ERROR] Template login failed");
     return;
   }
 
@@ -93,11 +93,13 @@ async function sendDiscordAlert(message) {
   let clean = saveJson?.game;
   if (!clean) {
     console.log("[ERROR] Template account has no game state");
+    sendDiscordAlert("[ERROR] Template account has no game state");
     return;
   }
 
   delete clean.owner;
-  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with network damping...\n`);
+  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with live progress tracking...\n`);
+  sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -109,13 +111,18 @@ async function sendDiscordAlert(message) {
     let currentIndex = 0;
 
     async function worker(workerId) {
-      // Stagger initial worker startup to prevent slamming the server all at once
+      // Stagger worker startup to avoid slamming the server network layer simultaneously
       await sleep(Math.floor(Math.random() * 500) + (workerId * 150));
 
       while (currentIndex < ledger.length) {
         const actualIndex = currentIndex++;
         const a = ledger[actualIndex];
         if (!a) break;
+
+        // Live progress counter prints every 50 accounts so you can track movement
+        if (actualIndex % 50 === 0) {
+          console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
+        }
 
         try {
           const lr = await request(`${API}/auth/login`, {
@@ -124,9 +131,7 @@ async function sendDiscordAlert(message) {
             body: JSON.stringify({ username: a.u, password: a.p })
           });
           
-          if (!lr.res.ok) {
-            continue; // Skip silently if network or login fails after retries
-          }
+          if (!lr.res.ok) continue;
 
           let accCookie = lr.newCookies;
           const svReq = await request(`${API}/save`, {}, accCookie);
@@ -165,7 +170,7 @@ async function sendDiscordAlert(message) {
 
             if (sr.res.ok) {
               sessionTotalSent += amount;
-              console.log(`[C${globalCycles}|${actualIndex + 1}/${ledger.length}] ${a.u} -> ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
+              console.log(`[SUCCESS] Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length} | ${a.u} -> Sent ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
               break;
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
@@ -177,7 +182,6 @@ async function sendDiscordAlert(message) {
             }
           }
 
-          // Gentle pacing between accounts to survive peak load
           await sleep(30 + Math.floor(Math.random() * 30));
         } catch (e) {}
       }
