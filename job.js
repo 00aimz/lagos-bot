@@ -87,7 +87,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("[READY] Drain engine online using proven browser-compatible save strategy.\n");
+  console.log("[READY] Drain engine online using browser-matched logic with full console error tracing.\n");
   sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
@@ -118,7 +118,12 @@ async function sendDiscordAlert(message) {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ username: a.u, password: a.p })
           });
-          if (!lr.res.ok) { fail++; continue; }
+          
+          if (!lr.res.ok) {
+            fail++;
+            console.log(`[LOGIN FAIL] ${a.u} status: ${lr.res.status}`);
+            continue;
+          }
 
           let accCookie = lr.newCookies;
           const svReq = await request(`${API}/save`, {}, accCookie);
@@ -128,7 +133,12 @@ async function sendDiscordAlert(message) {
             const meReq = await request(`${API}/auth/me`, {}, accCookie);
             const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
             const oid = me?.user?.id;
-            if (!oid || me?.user?.username !== a.u) { fail++; continue; }
+            
+            if (!oid || me?.user?.username !== a.u) {
+              fail++;
+              console.log(`[ME FAIL] Could not verify owner id for ${a.u}`);
+              continue;
+            }
 
             const g = JSON.parse(JSON.stringify(clean));
             g.sim.name = a.u;
@@ -151,15 +161,24 @@ async function sendDiscordAlert(message) {
               if (errText.includes("stale")) {
                 const svRetry = await request(`${API}/save`, {}, accCookie);
                 sv = svRetry.res.ok ? await svRetry.res.json() : null;
-                if (!sv?.game) { fail++; continue; }
+                if (!sv?.game) {
+                  fail++;
+                  console.log(`[BOOT STALE FAIL] ${a.u} recovery failed`);
+                  continue;
+                }
               } else {
                 fail++;
+                console.log(`[BOOT FAIL] ${a.u}: ${errText.slice(0, 100)}`);
                 continue;
               }
             }
           }
 
-          if (!sv?.game) { fail++; continue; }
+          if (!sv?.game) {
+            fail++;
+            console.log(`[NO GAME] No game state found for ${a.u}`);
+            continue;
+          }
 
           if (Number(sv.game.money) < MIN + FEE) {
             const g = JSON.parse(JSON.stringify(sv.game));
@@ -176,15 +195,23 @@ async function sendDiscordAlert(message) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
+              const errText = typeof rr.res.text === 'function' ? await rr.res.text() : '';
               broke++;
+              console.log(`[REPAIR FAIL] ${a.u}: ${errText.slice(0, 100)}`);
               continue;
             }
           }
 
-          if (!sv?.game) { broke++; continue; }
+          if (!sv?.game) {
+            broke++;
+            continue;
+          }
 
           let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
-          if (amount < MIN) { broke++; continue; }
+          if (amount < MIN) {
+            broke++;
+            continue;
+          }
 
           let ok = false;
           for (let tries = 0; tries < 3 && !ok; tries++) {
@@ -214,6 +241,7 @@ async function sendDiscordAlert(message) {
                 continue;
               }
               fail++;
+              console.log(`[SEND FAIL] ${a.u}: ${errText.slice(0, 100)}`);
               break;
             }
           }
@@ -221,6 +249,7 @@ async function sendDiscordAlert(message) {
           await sleep(50);
         } catch (e) {
           fail++;
+          console.log(`[WORKER EXCEPTION] Worker ${workerId} on ${a.u}:`, e.message);
         }
       }
     }
