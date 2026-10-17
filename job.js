@@ -1,13 +1,4 @@
 const fs = require('fs');
-const { Agent, setGlobalDispatcher } = require('undici');
-
-// Tune global dispatcher for high-concurrency keep-alive connection pooling
-setGlobalDispatcher(new Agent({
-  connections: 250,
-  pipelining: 10,
-  keepAliveTimeout: 60000,
-  keepAliveMaxTimeout: 60000,
-}));
 
 const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
@@ -16,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 20; // Balanced for high speed with keep-alive pooling
+const CONCURRENT_LIMIT = 20; // Balanced for high throughput with 3,080 accounts
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -93,12 +84,13 @@ async function sendDiscordAlert(message) {
   let clean = saveJson?.game;
   if (!clean) {
     console.log("[ERROR] Template account has no game state");
+    sendDiscordAlert("[ERROR] Template account has no game state");
     return;
   }
 
   delete clean.owner;
-  console.log("[READY] High-performance keep-alive drain engine online with Discord.\n");
-  sendDiscordAlert("🚀 High-performance keep-alive drain engine online with 3,080 accounts loaded.");
+  console.log("[READY] Native high-performance drain engine online with Discord.\n");
+  sendDiscordAlert(`🚀 Drain engine online. Loaded ${ledger.length} accounts across 10 files.`);
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -107,7 +99,7 @@ async function sendDiscordAlert(message) {
     if (TARGET_HOURS > 0 && (Date.now() - sessionStart) >= TARGET_HOURS * 3600000) break;
 
     globalCycles++;
-    let currentIndex = 0, cycleTotal = 0;
+    let currentIndex = 0;
 
     async function worker(workerId) {
       await sleep(Math.floor(Math.random() * 200) + (workerId * 30));
@@ -176,9 +168,8 @@ async function sendDiscordAlert(message) {
             }, accCookie);
 
             if (sr.res.ok) {
-              cycleTotal += amount;
               sessionTotalSent += amount;
-              console.log(`[C${globalCycles}|${actualIndex + 1}] ${a.u} -> ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
+              console.log(`[C${globalCycles}|${actualIndex + 1}/${ledger.length}] ${a.u} -> ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
               break;
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
@@ -190,6 +181,7 @@ async function sendDiscordAlert(message) {
             }
           }
 
+          // Micro-pacing delay to maintain stability
           await sleep(10 + Math.floor(Math.random() * 15));
         } catch (e) {}
       }
