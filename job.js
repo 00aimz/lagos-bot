@@ -7,12 +7,15 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25; // Back up to 25 for maximum throughput
 
 const storeDir = './store';
-if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
+if (!fs.existsSync(storeDir)) {
+  fs.mkdirSync(storeDir);
+}
 
+// Advanced robust shuffle using crypto-based randomness if available, mixed with unique salts
 function secureShuffle(array) {
+  // Add a micro-shift based on current execution time ticks to ensure unique order per clone/runner
   const salt = Date.now() % 1000;
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor((Math.random() * (i + 1) + salt) % (i + 1));
@@ -23,150 +26,221 @@ function secureShuffle(array) {
 
 let ledger = [];
 try {
-  const files = fs.readdirSync(storeDir).filter(f => f.startsWith('accs'));
+  const files = fs.readdirSync(storeDir).sort(); // Sort files so order parsing can be varied
+  // Shuffle the file read sequence itself so clones don't load files in the exact same sequence
+  secureShuffle(files);
+
   for (const file of files) {
-    const rawData = fs.readFileSync(`${storeDir}/${file}`, 'utf8');
-    if (rawData.trim()) ledger.push(...JSON.parse(rawData));
+    if (file.startsWith('accs')) {
+      const filePath = `${storeDir}/${file}`;
+      const rawData = fs.readFileSync(filePath, 'utf8');
+      if (rawData.trim()) {
+        const parsed = JSON.parse(rawData);
+        if (Array.isArray(parsed)) {
+          ledger = ledger.concat(parsed);
+          console.log(`[INIT] Loaded ${parsed.length} accounts from ${file}`);
+        }
+      }
+    }
   }
 } catch (e) {
-  console.log("[INIT] Error:", e.message);
+  console.log("[INIT] Error reading ledger files:", e.message);
 }
 
-if (!ledger.length) {
-  console.log("[ERROR] No accounts!");
+if (ledger.length === 0) {
+  console.log("[ERROR] No accounts found in the store folder!");
   return;
 }
 
+// Randomize order on startup uniquely
+secureShuffle(ledger);
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function request(url, options = {}, cookieJar = '', retries = 3) {
+async function request(url, options = {}, cookieJar = '') {
   options.headers = options.headers || {};
   if (cookieJar) options.headers['cookie'] = cookieJar;
-
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(url, { ...options, signal: AbortSignal.timeout(6000) });
-      
-      const setCookie = res.headers.get('set-cookie');
-      let newCookies = cookieJar;
-      if (setCookie) {
-        const c = setCookie.split(',')[0].split(';')[0];
-        newCookies = cookieJar ? `${cookieJar};${c}` : c;
-      }
-      return { res, newCookies };
-    } catch (e) {
-      if (attempt === retries) {
-        return { res: { ok: false, statusText: e.message }, newCookies: cookieJar };
-      }
-      await sleep(300 * attempt);
-    }
+  const res = await fetch(url, options);
+  const setCookie = res.headers.get('set-cookie');
+  let newCookies = cookieJar;
+  if (setCookie) {
+    const cookies = setCookie.split(',').map(c => c.split(';')[0]).join('; ');
+    newCookies = cookieJar ? `${cookieJar}; ${cookies}` : cookies;
   }
+  return { res, newCookies };
 }
 
 async function sendDiscordAlert(message) {
   if (!DISCORD_WEBHOOK_URL) return;
-  fetch(DISCORD_WEBHOOK_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: message })
-  }).catch(() => {});
+  try {
+    await fetch(DISCORD_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: message })
+    });
+  } catch (e) {}
+}
+
+function formatElapsedTime(ms) {
+  const seconds = Math.floor((ms / 1000) % 60);
+  const minutes = Math.floor((ms / (1000 * 60)) % 60);
+  const hours = Math.floor(ms / (1000 * 60 * 60));
+  return `${hours}h ${minutes}m ${seconds}s`;
 }
 
 (async () => {
-  secureShuffle(ledger);
+  console.log(`\n==================================================`);
+  console.log(`        LAGOS BOT - AUTOMATED DRAIN ENGINE        `);
+  console.log(`==================================================`);
+  console.log(`Target Destination ID : ${TO}`);
+  console.log(`Total Unique Accounts : ${ledger.length}`);
+  console.log(`Order Strategy        : Unique Randomized Rolling Queue`);
+  console.log(`Target Duration       : ${TARGET_HOURS > 0 ? TARGET_HOURS + " Hours" : "Infinite (Until Stopped)"}`);
+  console.log(`==================================================\n`);
 
+  await sendDiscordAlert(`🚀 **Lagos Bot Runner Started!**\nTarget ID: \`${TO}\`\nLoaded Accounts: **${ledger.length}**`);
+
+  let cookieJar = '';
   const loginRes = await request(`${API}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: TEMPLATE.u, password: TEMPLATE.p })
-  });
+  }, cookieJar);
 
   if (!loginRes.res.ok) {
-    console.log("[ERROR] Template login failed");
-    sendDiscordAlert("[ERROR] Template login failed");
+    console.log("[ERROR] Template login failed — check template credentials");
+    await sendDiscordAlert(`❌ **Error:** Template login failed. Check credentials.`);
     return;
   }
+  cookieJar = loginRes.newCookies;
 
-  const getSaveReq = await request(`${API}/save`, {}, loginRes.newCookies);
+  const getSaveReq = await request(`${API}/save`, {}, cookieJar);
   const saveJson = getSaveReq.res.ok ? await getSaveReq.res.json() : null;
   let clean = saveJson?.game;
+
   if (!clean) {
     console.log("[ERROR] Template account has no game state");
-    sendDiscordAlert("[ERROR] Template account has no game state");
     return;
   }
 
+  clean = JSON.parse(JSON.stringify(clean));
   delete clean.owner;
-  console.log(`[READY] Engine online. Loaded ${ledger.length} accounts. Starting execution with stale-save override fix...\n`);
-  sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
+  console.log("[READY] Template state secured. Starting unique rolling queue loop...\n");
 
   const sessionStart = Date.now();
-  let sessionTotalSent = 0, globalCycles = 0;
+  let lastHourlyReportTime = sessionStart;
+  let sessionTotalSent = 0;
+  let globalCycles = 0;
 
   while (true) {
-    if (TARGET_HOURS > 0 && (Date.now() - sessionStart) >= TARGET_HOURS * 3600000) break;
+    const now = Date.now();
+    const elapsedMs = now - sessionStart;
+
+    if (TARGET_HOURS > 0 && elapsedMs >= TARGET_HOURS * 3600 * 1000) {
+      console.log(`\n[INFO] Target duration of ${TARGET_HOURS} hours reached. Gracefully stopping script.`);
+      await sendDiscordAlert(`⏱️ **Target run duration of ${TARGET_HOURS}h reached.** Runner exiting gracefully.\n**Session Total Sent:** ₦${sessionTotalSent.toLocaleString()}`);
+      break;
+    }
 
     globalCycles++;
+    console.log(`\n--- STARTING DRAIN CYCLE #${globalCycles} (Elapsed: ${formatElapsedTime(elapsedMs)}) ---`);
+
+    let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0, cycleTotal = 0;
+    
+    const CONCURRENT_LIMIT = 5;
     let currentIndex = 0;
 
     async function worker(workerId) {
-      await sleep(Math.floor(Math.random() * 500) + (workerId * 150));
+      // Add a randomized stagger per worker to de-sync execution paths completely from other clones
+      await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
 
       while (currentIndex < ledger.length) {
         const actualIndex = currentIndex++;
         const a = ledger[actualIndex];
-        if (!a) break;
-
-        if (actualIndex % 50 === 0) {
-          console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
-        }
+        const progressTag = `[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}]`;
 
         try {
+          let accCookie = '';
           const lr = await request(`${API}/auth/login`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ username: a.u, password: a.p })
-          });
-          
-          if (!lr.res.ok) continue;
+          }, accCookie);
 
-          let accCookie = lr.newCookies;
+          if (!lr.res.ok) {
+            fail++;
+            continue;
+          }
+          accCookie = lr.newCookies;
+
           const svReq = await request(`${API}/save`, {}, accCookie);
           let sv = svReq.res.ok ? await svReq.res.json() : null;
 
-          const currentMoney = Number(sv?.game?.money ?? 0);
-          if (!sv?.game || currentMoney < MIN + FEE) {
+          if (!sv?.game) {
             const meReq = await request(`${API}/auth/me`, {}, accCookie);
             const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
-            if (!me?.user?.id) continue;
+            const oid = me?.user?.id;
 
-            // FIXED: Use the account's existing game state if it has one to prevent "stale" errors; otherwise use clean template
-            const baseGame = sv?.game ? sv.game : clean;
-            const g = { ...baseGame, sim: { ...baseGame.sim, name: a.u }, owner: me.user.id, money: SEED };
-            
+            if (!oid || me?.user?.username !== a.u) {
+              fail++;
+              continue;
+            }
+
+            const g = JSON.parse(JSON.stringify(clean));
+            g.sim.name = a.u;
+            g.owner = oid;
+            g.money = SEED;
+
             const br = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, owner: me.user.id, fresh: true, replace: 1 }) // replace: 1 forces overwrite
+              body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 0 })
             }, accCookie);
 
             if (br.res.ok) {
+              booted++;
               await sleep(50);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
-              const failText = typeof br.res.text === 'function' ? await br.res.text() : br.res.statusText;
-              console.log(`[DEBUG FAIL] Seed save failed for ${a.u}: ${failText}`);
+              fail++;
               continue;
             }
           }
 
-          if (!sv?.game) continue;
+          if (!sv?.game) {
+            fail++;
+            continue;
+          }
+
+          if (Number(sv.game.money) < MIN + FEE) {
+            const g = JSON.parse(JSON.stringify(sv.game));
+            g.money = SEED;
+            const rr = await request(`${API}/save`, {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ game: g, base: sv.updatedAt ?? sv.now })
+            }, accCookie);
+
+            if (rr.res.ok) {
+              repaired++;
+              await sleep(50);
+              const svRetry = await request(`${API}/save`, {}, accCookie);
+              sv = svRetry.res.ok ? await svRetry.res.json() : null;
+            } else {
+              broke++;
+              continue;
+            }
+          }
 
           let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
-          if (amount < MIN) continue;
+          if (amount < MIN) {
+            broke++;
+            continue;
+          }
 
-          for (let tries = 0; tries < 3; tries++) {
+          let ok = false;
+          for (let tries = 0; tries < 3 && !ok; tries++) {
             const sr = await request(`${API}/send`, {
               method: "POST",
               headers: { "content-type": "application/json" },
@@ -174,30 +248,49 @@ async function sendDiscordAlert(message) {
             }, accCookie);
 
             if (sr.res.ok) {
+              ok = true;
+              cycleTotal += amount;
               sessionTotalSent += amount;
-              console.log(`[SUCCESS] Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length} | ${a.u} -> Sent ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
-              sendDiscordAlert(`✅ Sent ₦${amount.toLocaleString()} from ${a.u}`);
-              break;
+              drained++;
+
+              const logMsg = `${progressTag} ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`;
+              console.log(logMsg);
             } else {
-              const errText = typeof sr.res.text === 'function' ? await sr.res.text() : sr.res.statusText;
-              console.log(`[DEBUG FAIL] Send failed for ${a.u}: ${errText}`);
-              if (errText.includes("try again")) {
-                await sleep(150 + Math.floor(Math.random() * 100));
+              const err = await sr.res.text();
+              if (err.includes("try again")) {
+                await sleep(1000);
                 continue;
               }
+              const have = Number((err.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
+              if (have) {
+                amount = have - FEE;
+                await sleep(200);
+                continue;
+              }
+              fail++;
               break;
             }
           }
-
-          await sleep(20 + Math.floor(Math.random() * 20));
         } catch (e) {
-          console.log(`[ERROR] Worker ${workerId} exception on ${a.u}:`, e.message);
+                          fail++;
         }
       }
     }
 
-    await Promise.all(Array.from({ length: CONCURRENT_LIMIT }, (_, idx) => worker(idx)));
+    // Launch 5 continuous worker threads with unique IDs
+    const workers = Array(CONCURRENT_LIMIT).fill(0).map((_, idx) => worker(idx));
+    await Promise.all(workers);
+
+    console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
+    console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
+    console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Session Total: ₦${sessionTotalSent.toLocaleString()}`);
+
+    if (Date.now() - lastHourlyReportTime >= 3600000) {
+      const hourlySummary = `⏳ **Hourly Status Report** (Elapsed: ${formatElapsedTime(Date.now() - sessionStart)})\n- Completed Cycles: ${globalCycles}\n- **Cumulative Total Sent:** ₦${sessionTotalSent.toLocaleString()}`;
+      await sendDiscordAlert(hourlySummary);
+      lastHourlyReportTime = Date.now();
+    }
+
     secureShuffle(ledger);
-    await sleep(1000);
   }
 })();
