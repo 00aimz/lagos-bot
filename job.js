@@ -4,10 +4,10 @@ const API = "https://lagoslife.app/api";
 const TO = process.env.TO;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-const FEE = 50, MIN = 100, SEED = 10095950;
+const FEE = 50, MIN = 100, SEED = 20095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 15; // Kept at optimal 15 for stability under heavy server load
+const CONCURRENT_LIMIT = 25;
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -87,7 +87,8 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("[READY] Fast drain engine online (Optimized & Paced).\n");
+  console.log("[READY] Drain engine online using proven browser-compatible save strategy.\n");
+  sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -97,6 +98,7 @@ async function sendDiscordAlert(message) {
 
     globalCycles++;
     let currentIndex = 0, cycleTotal = 0;
+    let booted = 0, repaired = 0, drained = 0, broke = 0, fail = 0;
 
     async function worker(workerId) {
       await sleep(Math.floor(Math.random() * 300) + (workerId * 50));
@@ -106,13 +108,17 @@ async function sendDiscordAlert(message) {
         const a = ledger[actualIndex];
         if (!a) break;
 
+        if (actualIndex % 50 === 0) {
+          console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
+        }
+
         try {
           const lr = await request(`${API}/auth/login`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ username: a.u, password: a.p })
           });
-          if (!lr.res.ok) continue;
+          if (!lr.res.ok) { fail++; continue; }
 
           let accCookie = lr.newCookies;
           const svReq = await request(`${API}/save`, {}, accCookie);
@@ -121,26 +127,43 @@ async function sendDiscordAlert(message) {
           if (!sv?.game) {
             const meReq = await request(`${API}/auth/me`, {}, accCookie);
             const me = meReq.res.ok ? await meReq.res.json().catch(() => null) : null;
-            if (!me?.user?.id) continue;
+            const oid = me?.user?.id;
+            if (!oid || me?.user?.username !== a.u) { fail++; continue; }
 
-            const g = { ...clean, sim: { ...clean.sim, name: a.u }, owner: me.user.id, money: SEED };
+            const g = JSON.parse(JSON.stringify(clean));
+            g.sim.name = a.u;
+            g.owner = oid;
+            g.money = SEED;
+
             const br = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ game: g, owner: me.user.id, fresh: true, replace: 0 })
+              body: JSON.stringify({ game: g, owner: oid, fresh: true, replace: 0 })
             }, accCookie);
 
             if (br.res.ok) {
-              await sleep(15);
+              booted++;
+              await sleep(150);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
-            } else continue;
+            } else {
+              const errText = typeof br.res.text === 'function' ? await br.res.text() : '';
+              if (errText.includes("stale")) {
+                const svRetry = await request(`${API}/save`, {}, accCookie);
+                sv = svRetry.res.ok ? await svRetry.res.json() : null;
+                if (!sv?.game) { fail++; continue; }
+              } else {
+                fail++;
+                continue;
+              }
+            }
           }
 
-          if (!sv?.game) continue;
+          if (!sv?.game) { fail++; continue; }
 
           if (Number(sv.game.money) < MIN + FEE) {
-            const g = { ...sv.game, money: SEED };
+            const g = JSON.parse(JSON.stringify(sv.game));
+            g.money = SEED;
             const rr = await request(`${API}/save`, {
               method: "PUT",
               headers: { "content-type": "application/json" },
@@ -148,16 +171,23 @@ async function sendDiscordAlert(message) {
             }, accCookie);
 
             if (rr.res.ok) {
-              await sleep(15);
+              repaired++;
+              await sleep(150);
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
-            } else continue;
+            } else {
+              broke++;
+              continue;
+            }
           }
 
-          let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
-          if (amount < MIN) continue;
+          if (!sv?.game) { broke++; continue; }
 
-          for (let tries = 0; tries < 3; tries++) {
+          let amount = Math.floor(Number(sv.game.money ?? 0)) - FEE;
+          if (amount < MIN) { broke++; continue; }
+
+          let ok = false;
+          for (let tries = 0; tries < 3 && !ok; tries++) {
             const sr = await request(`${API}/send`, {
               method: "POST",
               headers: { "content-type": "application/json" },
@@ -165,30 +195,43 @@ async function sendDiscordAlert(message) {
             }, accCookie);
 
             if (sr.res.ok) {
+              ok = true;
               cycleTotal += amount;
               sessionTotalSent += amount;
-              console.log(`[Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Session Total: ₦${sessionTotalSent.toLocaleString()}`);
-              break;
+              drained++;
+              console.log(`[SUCCESS] [Cycle ${globalCycles} | ${actualIndex + 1}/${ledger.length}] ${a.u} -> Sent ₦${amount.toLocaleString()} | Total: ₦${sessionTotalSent.toLocaleString()}`);
+              sendDiscordAlert(`✅ Sent ₦${amount.toLocaleString()} from ${a.u}`);
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
               if (errText.includes("try again")) {
-                await sleep(100 + Math.floor(Math.random() * 100));
+                await sleep(3000);
                 continue;
               }
+              const have = Number((errText.match(/have ₦([\d,]+)/) || [])[1]?.replace(/,/g, ""));
+              if (have) {
+                amount = have - FEE;
+                await sleep(800);
+                continue;
+              }
+              fail++;
               break;
             }
           }
 
-          // Micro-pacing to keep connections fluid under 50k user load
-          await sleep(10 + Math.floor(Math.random() * 15));
-        } catch (e) {}
+          await sleep(50);
+        } catch (e) {
+          fail++;
+        }
       }
     }
 
     await Promise.all(Array.from({ length: CONCURRENT_LIMIT }, (_, idx) => worker(idx)));
     secureShuffle(ledger);
 
-    if (global.gc) global.gc();
+    console.log(`\n--- CYCLE #${globalCycles} COMPLETED ---`);
+    console.log(`Booted: ${booted} | Repaired: ${repaired} | Drained: ${drained} | Broke: ${broke} | Fail: ${fail}`);
+    console.log(`Cycle Sent: ₦${cycleTotal.toLocaleString()} | Cumulative Total: ₦${sessionTotalSent.toLocaleString()}\n`);
+
     await sleep(500);
   }
 })();
