@@ -7,7 +7,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const FEE = 50, MIN = 100, SEED = 10095950;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25;
+const CONCURRENT_LIMIT = 25; // High throughput concurrency
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -87,7 +87,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("[READY] Fast drain engine online (Auto-Correct Stale Handler Active).\n");
+  console.log("[READY] Fast drain engine online (With Live Progress & Auto-Correct Stale Handler).\n");
 
   const sessionStart = Date.now();
   let sessionTotalSent = 0, globalCycles = 0;
@@ -105,6 +105,11 @@ async function sendDiscordAlert(message) {
         const actualIndex = currentIndex++;
         const a = ledger[actualIndex];
         if (!a) break;
+
+        // Live progress counter every 50 accounts so you can track movement
+        if (actualIndex % 50 === 0) {
+          console.log(`[PROGRESS] Worker ${workerId} scanning index ${actualIndex + 1}/${ledger.length} (${a.u})`);
+        }
 
         try {
           const lr = await request(`${API}/auth/login`, {
@@ -137,6 +142,8 @@ async function sendDiscordAlert(message) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
+              const failText = typeof br.res.text === 'function' ? await br.res.text() : br.res.statusText;
+              console.log(`[DEBUG FAIL] Boot save failed for ${a.u}: ${failText}`);
               continue;
             }
           }
@@ -170,6 +177,8 @@ async function sendDiscordAlert(message) {
               const svRetry = await request(`${API}/save`, {}, accCookie);
               sv = svRetry.res.ok ? await svRetry.res.json() : null;
             } else {
+              const failText = typeof rr.res.text === 'function' ? await rr.res.text() : rr.res.statusText;
+              console.log(`[DEBUG FAIL] Repair save failed for ${a.u}: ${failText}`);
               continue;
             }
           }
@@ -196,6 +205,7 @@ async function sendDiscordAlert(message) {
               break;
             } else {
               const errText = typeof sr.res.text === 'function' ? await sr.res.text() : '';
+              console.log(`[DEBUG FAIL] Send failed for ${a.u}: ${errText}`);
               if (errText.includes("try again")) {
                 await sleep(100 + Math.floor(Math.random() * 100));
                 continue;
@@ -205,7 +215,9 @@ async function sendDiscordAlert(message) {
           }
 
           await sleep(10 + Math.floor(Math.random() * 15));
-        } catch (e) {}
+        } catch (e) {
+          console.log(`[ERROR] Worker exception on ${a.u}:`, e.message);
+        }
       }
     }
 
